@@ -1,0 +1,192 @@
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, float, boolean, json } from "drizzle-orm/mysql-core";
+
+// ─── Users ───────────────────────────────────────────────────
+// `openId` is kept as the primary user identifier (unique key) for backwards
+// compatibility with existing code. For local email/password auth the openId
+// is set to the normalized (lowercased) email.
+// `passwordHash` stores a bcrypt hash; null means the account was created via
+// an external mechanism and cannot log in with password.
+export const users = mysqlTable("users", {
+  id: int("id").autoincrement().primaryKey(),
+  openId: varchar("openId", { length: 64 }).notNull().unique(),
+  name: text("name"),
+  email: varchar("email", { length: 320 }),
+  loginMethod: varchar("loginMethod", { length: 64 }),
+  passwordHash: varchar("passwordHash", { length: 255 }),
+  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+});
+
+export type User = typeof users.$inferSelect;
+export type InsertUser = typeof users.$inferInsert;
+
+// ─── BESS Sites ──────────────────────────────────────────────
+export const bessSites = mysqlTable("bess_sites", {
+  id: int("id").autoincrement().primaryKey(),
+  slug: varchar("slug", { length: 32 }).notNull().unique(), // "piscinao" | "barragem"
+  name: varchar("name", { length: 128 }).notNull(),
+  description: text("description"),
+  // Site specs
+  bessCount: int("bessCount").default(1).notNull(),
+  bessCapacityKwh: float("bessCapacityKwh").default(215).notNull(),
+  bessModel: varchar("bessModel", { length: 64 }).default("LUNA2000-215KWH").notNull(),
+  // Pump/load info
+  pumpCount: int("pumpCount").default(1).notNull(),
+  pumpPowerCv: float("pumpPowerCv").default(30).notNull(),
+  pumpDescription: text("pumpDescription"),
+  // Control mode
+  controlMode: mysqlEnum("controlMode", ["manual", "auto_mqtt", "auto_future"]).default("manual").notNull(),
+  // MQTT config for Sonoff/Tasmota
+  mqttTopic: varchar("mqttTopic", { length: 128 }),
+  // FusionSolar device IDs (JSON array of device IDs for this site)
+  fusionsolarDeviceIds: text("fusionsolarDeviceIds"), // JSON string: battery device IDs ["id1","id2"]
+  fusionsolarInverterIds: text("fusionsolarInverterIds"), // JSON string: inverter device IDs ["id1","id2"]
+  fusionsolarPlantCode: varchar("fusionsolarPlantCode", { length: 64 }),
+  // Status
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type BessSite = typeof bessSites.$inferSelect;
+export type InsertBessSite = typeof bessSites.$inferInsert;
+
+// ─── BESS Readings (expanded: SOC, power, temperature, SOH) ─
+export const bessReadings = mysqlTable("bess_readings", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  // Battery data
+  soc: float("soc").notNull(),
+  soh: float("soh"),
+  batteryPower: float("batteryPower"), // kW, positive=charging, negative=discharging
+  batteryTemperature: float("batteryTemperature"), // °C
+  busVoltage: float("busVoltage"), // V
+  // Plant data
+  pvPower: float("pvPower"), // kW - solar generation
+  gridPower: float("gridPower"), // kW - grid import/export
+  loadPower: float("loadPower"), // kW - total load consumption
+  // Validity
+  valid: boolean("valid").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type BessReading = typeof bessReadings.$inferSelect;
+
+// ─── BESS Events ─────────────────────────────────────────────
+export const bessEvents = mysqlTable("bess_events", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  type: varchar("type", { length: 32 }).notNull(),
+  description: text("description").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type BessEvent = typeof bessEvents.$inferSelect;
+
+// ─── BESS Alarms ─────────────────────────────────────────────
+export const bessAlarms = mysqlTable("bess_alarms", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  severity: mysqlEnum("severity", ["CRITICAL", "WARNING", "INFO"]).notNull(),
+  type: varchar("type", { length: 64 }).notNull(),
+  description: text("description").notNull(),
+  active: boolean("active").default(true).notNull(),
+  openedAt: timestamp("openedAt").defaultNow().notNull(),
+  closedAt: timestamp("closedAt"),
+});
+
+export type BessAlarm = typeof bessAlarms.$inferSelect;
+
+// ─── BESS State (per site) ───────────────────────────────────
+export const bessState = mysqlTable("bess_state", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  loadStatus: mysqlEnum("loadStatus", ["on", "off"]).default("off").notNull(),
+  mode: mysqlEnum("mode", ["auto", "manual"]).default("auto").notNull(),
+  currentSoc: float("currentSoc").default(0).notNull(),
+  currentSoh: float("currentSoh"),
+  currentBatteryPower: float("currentBatteryPower"),
+  currentTemperature: float("currentTemperature"),
+  currentPvPower: float("currentPvPower"),
+  currentLoadPower: float("currentLoadPower"),
+  lowCounter: int("lowCounter").default(0).notNull(),
+  highCounter: int("highCounter").default(0).notNull(),
+  lastManeuverAt: timestamp("lastManeuverAt"),
+  healthStatus: mysqlEnum("healthStatus", ["healthy", "attention", "degraded", "critical"]).default("healthy").notNull(),
+  lastDecision: text("lastDecision"),
+  mqttConnected: boolean("mqttConnected").default(false).notNull(),
+  sonoffOnline: boolean("sonoffOnline").default(false).notNull(),
+  sonoffPower: mysqlEnum("sonoffPower", ["ON", "OFF", "UNKNOWN"]).default("UNKNOWN").notNull(),
+  lastTelemetryAt: timestamp("lastTelemetryAt"),  // Last time SOC was updated from real FusionSolar data
+  socSource: mysqlEnum("socSource", ["fusionsolar", "manual", "simulation", "unknown"]).default("unknown").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type BessState = typeof bessState.$inferSelect;
+
+// ─── BESS Config (per site) ─────────────────────────────────
+export const bessConfig = mysqlTable("bess_config", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  socLowLimit: float("socLowLimit").default(15).notNull(),
+  socHighLimit: float("socHighLimit").default(20).notNull(),
+  cooldownMinutes: int("cooldownMinutes").default(5).notNull(),
+  lowReadingsRequired: int("lowReadingsRequired").default(2).notNull(),
+  highReadingsRequired: int("highReadingsRequired").default(3).notNull(),
+  presetName: varchar("presetName", { length: 32 }).default("padrao").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type BessConfig = typeof bessConfig.$inferSelect;
+
+// ─── BESS Reports (periodic performance summaries) ──────────
+export const bessReports = mysqlTable("bess_reports", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  // Report type and period
+  reportType: mysqlEnum("reportType", ["daily", "weekly"]).notNull(),
+  periodStart: timestamp("periodStart").notNull(),
+  periodEnd: timestamp("periodEnd").notNull(),
+  // SOC metrics
+  avgSoc: float("avgSoc").notNull(),
+  minSoc: float("minSoc").notNull(),
+  maxSoc: float("maxSoc").notNull(),
+  // Power metrics
+  avgPvPower: float("avgPvPower"),
+  maxPvPower: float("maxPvPower"),
+  avgLoadPower: float("avgLoadPower"),
+  maxLoadPower: float("maxLoadPower"),
+  // Battery metrics
+  avgBatteryPower: float("avgBatteryPower"),
+  avgTemperature: float("avgTemperature"),
+  maxTemperature: float("maxTemperature"),
+  // Operating metrics
+  totalReadings: int("totalReadings").default(0).notNull(),
+  loadOnMinutes: int("loadOnMinutes").default(0).notNull(), // estimated time load was ON
+  estimatedEnergyKwh: float("estimatedEnergyKwh").default(0).notNull(), // estimated energy consumed
+  // Events summary
+  totalEvents: int("totalEvents").default(0).notNull(),
+  totalAlarms: int("totalAlarms").default(0).notNull(),
+  maneuverCount: int("maneuverCount").default(0).notNull(),
+  // Notification
+  notificationSent: boolean("notificationSent").default(false).notNull(),
+  // Metadata
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type BessReport = typeof bessReports.$inferSelect;
+export type InsertBessReport = typeof bessReports.$inferInsert;
+
+
+// ─── BESS Settings (global system configuration) ────────────
+export const bessSettings = mysqlTable("bess_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  key: varchar("key", { length: 64 }).notNull().unique(),
+  value: text("value").notNull(),
+  description: text("description"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type BessSetting = typeof bessSettings.$inferSelect;
+export type InsertBessSetting = typeof bessSettings.$inferInsert;

@@ -1,0 +1,1 @@
+ALTER TABLE `bess_state` ADD `sonoffPower` enum('ON','OFF','UNKNOWN') DEFAULT 'UNKNOWN' NOT NULL;

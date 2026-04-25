@@ -1,0 +1,1342 @@
+import { COOKIE_NAME } from "@shared/const";
+import { getSessionCookieOptions } from "./_core/cookies";
+import { publicProcedure, router } from "./_core/trpc";
+import { z } from "zod";
+import {
+  getAllSites,
+  getSiteBySlug,
+  getBessState,
+  upsertBessState,
+  addReading,
+  getReadings,
+  getReadingsByDate,
+  addEvent,
+  getRecentEvents,
+  getAllRecentEvents,
+  getActiveAlarms,
+  addAlarm,
+  getBessConfig,
+  upsertBessConfig,
+  upsertSite,
+  seedMultiSiteData,
+  getReports,
+  getReportsByPeriod,
+  getLatestReport,
+  getReportTrends,
+  getReportsCount,
+  getSetting,
+  upsertSetting,
+  getAllSettings,
+} from "./db";
+import { getFusionSolarClient, isFusionSolarConfigured } from "./fusionsolar";
+import { getMqttClient, isMqttConfigured } from "./mqtt-tasmota";
+import { notifyOwner } from "./_core/notification";
+import { generateSiteReport, generateAllReports, generateAndNotify, getSchedulerSettings, SETTING_SCHEDULER_ENABLED, SETTING_DAILY_HOUR, SETTING_WEEKLY_DAY } from "./report-generator";
+
+// ── Shared MQTT dispatch helper ──
+// Used by both manual command and automatic simulateTick to send ON/OFF to Sonoff
+export async function sendMqttCommand(
+  siteId: number,
+  mqttTopic: string,
+  action: "ON" | "OFF",
+  context: string = "manual",
+): Promise<{ success: boolean; message: string }> {
+  if (!isMqttConfigured()) {
+    return { success: false, message: "MQTT não configurado no servidor." };
+  }
+  try {
+    const mqtt = getMqttClient();
+    const result = await mqtt.sendCommand(mqttTopic, action);
+    // Update MQTT connection state in DB
+    const deviceState = mqtt.getDeviceState(mqttTopic);
+    await upsertBessState(siteId, {
+      mqttConnected: mqtt.isConnected,
+      sonoffOnline: deviceState?.online ?? false,
+    });
+    console.log(`[MQTT:${context}] siteId=${siteId}: ${action} → ${result.message}`);
+    return result;
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    console.error(`[MQTT:${context}] siteId=${siteId}: ${action} failed — ${errMsg}`);
+    return { success: false, message: `Falha MQTT: ${errMsg}` };
+  }
+}
+
+// ── Notification helper for critical alarms ──
+async function notifyCriticalAlarm(siteName: string, message: string) {
+  try {
+    await notifyOwner({
+      title: `⚠️ ALARME CRÍTICO — ${siteName}`,
+      content: message,
+    });
+  } catch (e) {
+    console.warn("[Notification] Falha ao enviar notificação:", e);
+  }
+}
+
+// Seed data on first load
+let seeded = false;
+async function ensureSeeded() {
+  if (!seeded) {
+    await seedMultiSiteData();
+    seeded = true;
+  }
+}
+
+// ── Discovery throttle: only try getDevList once every 30 min ──
+const _lastDiscoveryAttempt: Record<string, number> = {};
+const DISCOVERY_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+
+// ── Shared FusionSolar fetch logic (used by endpoint + auto-fetch) ──
+export async function fetchFusionSolarData(slug: string) {
+  await ensureSeeded();
+  const site = await getSiteBySlug(slug);
+  if (!site) return { success: false, message: "Site não encontrado." };
+
+  if (!site.fusionsolarPlantCode) {
+    return { success: false, message: "FusionSolar não configurada para este site." };
+  }
+  if (!isFusionSolarConfigured()) {
+    return { success: false, message: "Credenciais FusionSolar não configuradas no servidor." };
+  }
+
+  try {
+    const client = getFusionSolarClient();
+
+    // Auto-discover device IDs if not yet configured (throttled to 1x per 30 min)
+    let batteryDevIdStr = "";
+    let inverterDevIdStr = "";
+
+    if (site.fusionsolarDeviceIds) {
+      const devIds = JSON.parse(site.fusionsolarDeviceIds);
+      batteryDevIdStr = Array.isArray(devIds) ? devIds.join(",") : String(devIds);
+    }
+    if (site.fusionsolarInverterIds) {
+      const invIds = JSON.parse(site.fusionsolarInverterIds);
+      inverterDevIdStr = Array.isArray(invIds) ? invIds.join(",") : String(invIds);
+    }
+
+    // Auto-discover if missing (throttled)
+    if (!batteryDevIdStr || !inverterDevIdStr) {
+      const lastAttempt = _lastDiscoveryAttempt[slug] ?? 0;
+      const now = Date.now();
+      if (now - lastAttempt > DISCOVERY_COOLDOWN_MS) {
+        _lastDiscoveryAttempt[slug] = now;
+        try {
+          const discovered = await client.discoverDeviceIds(site.fusionsolarPlantCode);
+          if (!batteryDevIdStr && discovered.batteryIds.length > 0) {
+            batteryDevIdStr = discovered.batteryIds.join(",");
+            await upsertSite({ slug, fusionsolarDeviceIds: JSON.stringify(discovered.batteryIds) } as any);
+            console.log(`[FusionSolar] Auto-discovered battery IDs for ${slug}: ${batteryDevIdStr}`);
+          }
+          if (!inverterDevIdStr && discovered.inverterIds.length > 0) {
+            inverterDevIdStr = discovered.inverterIds.join(",");
+            await upsertSite({ slug, fusionsolarInverterIds: JSON.stringify(discovered.inverterIds) } as any);
+            console.log(`[FusionSolar] Auto-discovered inverter IDs for ${slug}: ${inverterDevIdStr}`);
+          }
+        } catch (discErr) {
+          console.warn(`[FusionSolar] Auto-discovery failed for ${slug} (next attempt in 30min):`, discErr);
+        }
+      } else {
+        const minutesLeft = Math.round((DISCOVERY_COOLDOWN_MS - (now - lastAttempt)) / 60000);
+        console.log(`[FusionSolar] Discovery throttled for ${slug} — next attempt in ${minutesLeft}min`);
+      }
+    }
+
+    // ── STRATEGY A: Device-level data (ideal — gives SOC, power, temperature) ──
+    if (batteryDevIdStr) {
+      const telemetry = await client.getFullTelemetry(
+        batteryDevIdStr,
+        site.fusionsolarPlantCode,
+        inverterDevIdStr || undefined
+      );
+
+      if (telemetry.success && telemetry.data) {
+        const d = telemetry.data;
+        const soc = d.battery_soc ?? 0;
+        const soh = d.battery_soh;
+        const batteryPower = d.battery_power;
+        const batteryTemperature = d.battery_temperature;
+        const pvPower = telemetry.inverterData?.active_power ?? telemetry.stationData?.day_power ?? 0;
+        const battDischarge = batteryPower && batteryPower < 0 ? Math.abs(batteryPower) : 0;
+        const battCharge = batteryPower && batteryPower > 0 ? batteryPower : 0;
+        const loadPower = Math.max(0, pvPower + battDischarge - battCharge);
+
+        await addReading(site.id, {
+          soc, soh: soh ?? undefined,
+          batteryPower: batteryPower ?? undefined,
+          batteryTemperature: batteryTemperature ?? undefined,
+          busVoltage: d.bus_voltage ?? undefined,
+          pvPower, loadPower, valid: true,
+        });
+
+        await upsertBessState(site.id, {
+          currentSoc: soc, currentSoh: soh ?? undefined,
+          currentBatteryPower: batteryPower ?? undefined,
+          currentTemperature: batteryTemperature ?? undefined,
+          currentPvPower: pvPower, currentLoadPower: loadPower,
+          lastTelemetryAt: new Date(), socSource: "fusionsolar" as const,
+        });
+
+        if (batteryTemperature && batteryTemperature > 45) {
+          await addAlarm(site.id, "CRITICAL", "HIGH_TEMPERATURE",
+            `Temperatura da bateria em ${batteryTemperature}°C — acima do limite seguro (45°C).`);
+          notifyCriticalAlarm(site.name, `TEMPERATURA CRÍTICA DA BATERIA\n\nTemperatura: ${batteryTemperature}°C\nLimite seguro: 45°C\n\nVerifique a ventilação e o ambiente do BESS imediatamente.`);
+        }
+
+        if (telemetry.dataAge && telemetry.dataAge > 600) {
+          await addAlarm(site.id, "WARNING", "STALE_DATA",
+            `Dados da FusionSolar com atraso de ${Math.round(telemetry.dataAge / 60)} minutos.`);
+        }
+
+        return {
+          success: true, source: "device" as const,
+          message: `Dados atualizados (device-level): SOC=${soc}%${soh ? `, SOH=${soh}%` : ""}${batteryPower ? `, Bat=${batteryPower}kW` : ""}, FV=${pvPower.toFixed(1)}kW, Carga=${loadPower.toFixed(1)}kW`,
+          data: { soc, soh, batteryPower, batteryTemperature, busVoltage: d.bus_voltage, pvPower, loadPower, dataAge: telemetry.dataAge },
+        };
+      }
+      // Device-level failed — fall through to station-level
+      console.warn(`[FusionSolar] Device-level fetch failed for ${slug}, trying station-level fallback...`);
+    }
+
+    // ── STRATEGY B: Station-level fallback (no SOC, but gives energy data) ──
+    console.log(`[FusionSolar] Using station-level fallback for ${slug}...`);
+    const stationData = await client.getStationRealKpi(site.fusionsolarPlantCode);
+
+    // Also get the latest hourly KPI for discharge/charge data
+    const now = Date.now();
+    const hourlyData = await client.getStationHourKpi(site.fusionsolarPlantCode, now);
+
+    // Extract the latest hour bucket
+    let latestHour: Record<string, any> | null = null;
+    if (Array.isArray(hourlyData) && hourlyData.length > 0) {
+      // Find the most recent hour bucket
+      for (const entry of hourlyData) {
+        const items = entry?.dataItemMap;
+        if (items && (!latestHour || (entry.collectTime > (latestHour as any)._collectTime))) {
+          latestHour = { ...items, _collectTime: entry.collectTime };
+        }
+      }
+    }
+
+    const pvPower = stationData?.day_power ?? 0; // kWh today (not instantaneous, but best available)
+    const dischargeCap = latestHour?.dischargeCap != null ? Number(latestHour.dischargeCap) : 0;
+    const chargeCap = latestHour?.chargeCap != null ? Number(latestHour.chargeCap) : 0;
+    const inverterPower = latestHour?.inverter_power != null ? Number(latestHour.inverter_power) : undefined;
+
+    // Save partial reading (no SOC from station-level)
+    await addReading(site.id, {
+      soc: 0, // Unknown — station-level doesn't provide SOC
+      pvPower: inverterPower ?? pvPower,
+      loadPower: 0,
+      valid: false, // Mark as partial/incomplete data
+    });
+
+    // Update state with available data (do NOT update SOC — keep existing value)
+    await upsertBessState(site.id, {
+      currentPvPower: inverterPower ?? pvPower,
+      // Do NOT update currentSoc, lastTelemetryAt, or socSource — we don't have real SOC
+    });
+
+    const hasDeviceIds = !!site.fusionsolarDeviceIds;
+    const reason = hasDeviceIds
+      ? "API retornou erro (rate limit ou auth) — device IDs configurados mas chamada falhou"
+      : "device IDs não configurados — configure na página Sistema";
+    const msg = `Dados parciais (station-level): FV hoje=${pvPower.toFixed(1)}kWh` +
+      (inverterPower != null ? `, Inversor última hora=${inverterPower.toFixed(2)}kWh` : "") +
+      `, Descarga=${dischargeCap.toFixed(2)}kWh, Carga=${chargeCap.toFixed(2)}kWh` +
+      ` | SOC NÃO DISPONÍVEL (${reason})`;
+
+    console.warn(`[FusionSolar] ${slug}: ${msg}`);
+    return {
+      success: true, source: "station" as const,
+      message: msg,
+      data: { soc: null, pvPower: inverterPower ?? pvPower, dischargeCap, chargeCap },
+    };
+  } catch (error) {
+    return { success: false, message: `Erro ao buscar dados: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// ── evaluateLoadControl: automatic SOC evaluation + MQTT dispatch ──
+// Called after each successful FusionSolar data fetch for auto_mqtt sites.
+// Also runs on a standalone periodic interval (every 5 min) as a safety net.
+// ══════════════════════════════════════════════════════════════
+export async function evaluateLoadControl(siteId: number): Promise<{ action: string; message: string }> {
+  const site = await getAllSites().then(sites => sites.find(s => s.id === siteId));
+  if (!site) return { action: "none", message: "Site não encontrado." };
+
+  // Only evaluate for auto_mqtt sites
+  if (site.controlMode !== "auto_mqtt") {
+    return { action: "skip", message: `Site ${site.slug} em modo ${site.controlMode} — avaliação automática ignorada.` };
+  }
+
+  const state = await getBessState(siteId);
+  const config = await getBessConfig(siteId);
+
+  // ── SOC Staleness Guard ──
+  // Only act on real FusionSolar data, not simulated/unknown SOC.
+  // Also skip if SOC data is older than 15 minutes.
+  const SOC_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes
+  const socSource = (state as any)?.socSource ?? "unknown";
+  const lastTelemetryAt = (state as any)?.lastTelemetryAt;
+
+  if (socSource !== "fusionsolar" && socSource !== "manual") {
+    const msg = `[AUTO] ${site.slug}: SOC ignorado — fonte="${socSource}" (não é dado real). Aguardando dados da FusionSolar.`;
+    console.log(`[LoadControl] ${msg}`);
+    return { action: "skip_stale", message: msg };
+  }
+
+  if (lastTelemetryAt) {
+    const age = Date.now() - new Date(lastTelemetryAt).getTime();
+    if (age > SOC_MAX_AGE_MS) {
+      const minutesStale = Math.round(age / 60000);
+      const msg = `[AUTO] ${site.slug}: SOC ignorado — dados com ${minutesStale}min de atraso (limite: 15min). Aguardando atualização.`;
+      console.log(`[LoadControl] ${msg}`);
+      await upsertBessState(siteId, {
+        healthStatus: "attention" as const,
+        lastDecision: msg,
+      });
+      return { action: "skip_stale", message: msg };
+    }
+  } else {
+    // No telemetry timestamp at all — SOC was never updated from real data
+    const msg = `[AUTO] ${site.slug}: SOC ignorado — nenhuma telemetria real recebida ainda. Aguardando dados da FusionSolar.`;
+    console.log(`[LoadControl] ${msg}`);
+    return { action: "skip_stale", message: msg };
+  }
+
+  const socLow = config?.socLowLimit ?? 15;
+  const socHigh = config?.socHighLimit ?? 20;
+  const lowRequired = config?.lowReadingsRequired ?? 2;
+  const highRequired = config?.highReadingsRequired ?? 3;
+  const currentSoc = state?.currentSoc ?? 50;
+
+  let lowCounter = state?.lowCounter ?? 0;
+  let highCounter = state?.highCounter ?? 0;
+  let healthStatus: "healthy" | "attention" | "degraded" | "critical" = "healthy";
+  let lastDecision = "";
+  let loadStatus = state?.loadStatus ?? "on";
+  let actionTaken = "none";
+
+  if (currentSoc <= socLow) {
+    lowCounter++;
+    highCounter = 0;
+    if (lowCounter >= lowRequired && loadStatus === "on") {
+      loadStatus = "off";
+      lowCounter = 0;
+      healthStatus = "critical";
+      lastDecision = `[AUTO] SOC em ${currentSoc}% — CARGA DESLIGADA automaticamente (${lowRequired} leituras <= ${socLow}%).`;
+      actionTaken = "LOAD_OFF";
+      await addEvent(siteId, "LOAD_OFF", lastDecision);
+      // Send MQTT command to Sonoff
+      if (site.mqttTopic) {
+        const mqttResult = await sendMqttCommand(siteId, site.mqttTopic, "OFF", `autoEval:${site.slug}`);
+        lastDecision += ` MQTT: ${mqttResult.message}`;
+      }
+      // Notify owner
+      notifyCriticalAlarm(site.name, `CARGA DESLIGADA automaticamente.\n\nSOC: ${currentSoc}%\nLimite: ${socLow}%\nLeituras consecutivas: ${lowRequired}\n\nA carga será religada quando o SOC atingir ${socHigh}%.`);
+    } else {
+      healthStatus = lowCounter >= lowRequired ? "critical" : "attention";
+      lastDecision = `[AUTO] SOC em ${currentSoc}% — abaixo do limite (${socLow}%). Contador LOW: ${lowCounter}/${lowRequired}.`;
+    }
+  } else if (currentSoc >= socHigh) {
+    highCounter++;
+    lowCounter = 0;
+    if (highCounter >= highRequired && loadStatus === "off") {
+      loadStatus = "on";
+      highCounter = 0;
+      healthStatus = "healthy";
+      lastDecision = `[AUTO] SOC em ${currentSoc}% — CARGA RELIGADA automaticamente (${highRequired} leituras >= ${socHigh}%).`;
+      actionTaken = "LOAD_ON";
+      await addEvent(siteId, "LOAD_ON", lastDecision);
+      // Send MQTT command to Sonoff
+      if (site.mqttTopic) {
+        const mqttResult = await sendMqttCommand(siteId, site.mqttTopic, "ON", `autoEval:${site.slug}`);
+        lastDecision += ` MQTT: ${mqttResult.message}`;
+      }
+    } else if (highCounter >= highRequired && loadStatus === "on") {
+      highCounter = highRequired;
+      healthStatus = "healthy";
+      lastDecision = `[AUTO] SOC em ${currentSoc}% — acima do limite (${socHigh}%). Carga já ligada. Estabilizado.`;
+    } else {
+      healthStatus = "healthy";
+      lastDecision = `[AUTO] SOC em ${currentSoc}% — acima do limite (${socHigh}%). Contador HIGH: ${highCounter}/${highRequired}.`;
+    }
+  } else {
+    // Dead zone — maintain current state
+    healthStatus = lowCounter > 0 ? "degraded" : "attention";
+    lastDecision = `[AUTO] SOC em ${currentSoc}% — zona morta (${socLow + 1}-${socHigh - 1}%). Estado mantido.`;
+  }
+
+  await upsertBessState(siteId, {
+    loadStatus, lowCounter, highCounter, healthStatus, lastDecision,
+    lastManeuverAt: actionTaken !== "none" ? new Date() : undefined,
+  });
+
+  console.log(`[LoadControl] ${site.slug}: SOC=${currentSoc}% → ${actionTaken !== "none" ? actionTaken : "no change"} | ${lastDecision}`);
+  return { action: actionTaken, message: lastDecision };
+}
+
+// ── Auto-fetch FusionSolar data every 5 minutes ──
+let autoFetchInterval: ReturnType<typeof setInterval> | null = null;
+
+export function startAutoFetch() {
+  if (autoFetchInterval) return;
+  console.log("[AutoFetch] Iniciando polling FusionSolar a cada 6 minutos + avaliação automática de carga...");
+
+  const doFetch = async () => {
+    try {
+      await ensureSeeded();
+      const sites = await getAllSites();
+      for (const site of sites) {
+        // 1. Fetch FusionSolar data (if configured)
+        if (site.fusionsolarPlantCode && isFusionSolarConfigured()) {
+          try {
+            const result = await fetchFusionSolarData(site.slug);
+            if (result.success) {
+              console.log(`[AutoFetch] ${site.slug}: ${result.message}`);
+            } else {
+              console.warn(`[AutoFetch] ${site.slug}: ${result.message}`);
+            }
+          } catch (e) {
+            console.warn(`[AutoFetch] Erro em ${site.slug}:`, e);
+          }
+          // Delay between sites to respect rate limiting (10s min between API calls)
+          await new Promise(r => setTimeout(r, 15000));
+        }
+
+        // 2. Evaluate load control for auto_mqtt sites (runs even if FusionSolar fetch failed)
+        if (site.controlMode === "auto_mqtt") {
+          try {
+            await evaluateLoadControl(site.id);
+          } catch (e) {
+            console.warn(`[AutoFetch] Erro ao avaliar carga ${site.slug}:`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[AutoFetch] Erro geral:", e);
+    }
+  };
+
+  // First evaluation after 15 seconds (let server stabilize)
+  setTimeout(doFetch, 15_000);
+  // Every 15 minutes to avoid rate limit saturation (2 sites × ~3 calls = 6 calls per cycle)
+  autoFetchInterval = setInterval(doFetch, 15 * 60 * 1000);
+}
+
+/**
+ * Start MQTT state sync: connects to broker, registers tracked devices,
+ * sets up a callback to sync real Sonoff state to the database,
+ * and starts polling every 30 seconds.
+ */
+export async function startMqttStateSync() {
+  if (!isMqttConfigured()) {
+    console.log("[MqttSync] MQTT não configurado — sync desativado.");
+    return;
+  }
+
+  try {
+    await ensureSeeded();
+    const sites = await getAllSites();
+    const mqtt = getMqttClient();
+
+    // Register tracked devices (sites with mqttTopic)
+    let trackedCount = 0;
+    for (const site of sites) {
+      if (site.mqttTopic) {
+        mqtt.trackDevice(site.mqttTopic);
+        trackedCount++;
+      }
+    }
+
+    if (trackedCount === 0) {
+      console.log("[MqttSync] Nenhum site com mqttTopic configurado.");
+      return;
+    }
+
+    // Set callback: when real Sonoff state changes, update DB
+    mqtt.setOnStateChange(async (deviceTopic, realState) => {
+      try {
+        // Find which site uses this mqttTopic
+        const allSites = await getAllSites();
+        const site = allSites.find(s => s.mqttTopic === deviceTopic);
+        if (!site) return;
+
+        const state = await getBessState(site.id);
+        const prevPower = state?.sonoffPower ?? "UNKNOWN";
+        const prevOnline = state?.sonoffOnline ?? false;
+
+        // Update DB with real Sonoff state
+        await upsertBessState(site.id, {
+          sonoffOnline: realState.online,
+          sonoffPower: realState.power,
+          mqttConnected: mqtt.isConnected,
+        });
+
+        // Log state changes
+        if (realState.power !== prevPower && realState.power !== "UNKNOWN") {
+          console.log(`[MqttSync] ${site.slug}: Sonoff real state = ${realState.power} (was ${prevPower})`);
+        }
+        if (realState.online !== prevOnline) {
+          console.log(`[MqttSync] ${site.slug}: Sonoff online = ${realState.online}`);
+        }
+
+        // Detect divergence: system says ON but Sonoff is OFF (or vice versa)
+        const expectedLoad = state?.loadStatus ?? "off";
+        const realPower = realState.power;
+        if (realPower !== "UNKNOWN" && realState.online) {
+          const isDivergent = (expectedLoad === "on" && realPower === "OFF") ||
+                              (expectedLoad === "off" && realPower === "ON");
+          if (isDivergent) {
+            console.warn(`[MqttSync] DIVERGÊNCIA ${site.slug}: sistema=${expectedLoad} sonoff=${realPower}`);
+            await addEvent(site.id, "DIVERGENCE",
+              `Estado divergente: sistema diz carga ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
+            await addAlarm(site.id, "WARNING", "DIVERGENCE",
+              `Divergência: carga deveria estar ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
+          }
+        }
+      } catch (e) {
+        console.error(`[MqttSync] Erro ao sincronizar estado de ${deviceTopic}:`, e);
+      }
+    });
+
+    // Connect and start polling
+    const connected = await mqtt.connect();
+    if (connected) {
+      mqtt.startPolling(30_000); // Poll every 30 seconds
+      console.log(`[MqttSync] Ativo: ${trackedCount} dispositivo(s) rastreado(s), polling a cada 30s.`);
+    } else {
+      console.warn("[MqttSync] Falha ao conectar ao broker MQTT.");
+    }
+  } catch (e) {
+    console.error("[MqttSync] Erro ao iniciar:", e);
+  }
+}
+
+export const appRouter = router({
+  // Inline replacement for the deleted server/_core/systemRouter.ts.
+  // Keeps the public `system.health` endpoint and re-exposes notifyOwner as an
+  // admin-only mutation in case the frontend ever needs to trigger a manual
+  // notification (currently it doesn't — alarms call notifyOwner directly).
+  system: router({
+    health: publicProcedure
+      .input(z.object({ timestamp: z.number().min(0).optional() }).optional())
+      .query(() => ({ ok: true })),
+  }),
+  auth: router({
+    me: publicProcedure.query(opts => { if (!opts.ctx.user) return null; const { passwordHash, ...safe } = opts.ctx.user; return safe; }),
+    logout: publicProcedure.mutation(({ ctx }) => {
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      return { success: true } as const;
+    }),
+  }),
+
+  bess: router({
+    // ── List all sites with summary status ──
+    sites: publicProcedure.query(async () => {
+      await ensureSeeded();
+      const sites = await getAllSites();
+      const result = [];
+      for (const site of sites) {
+        const state = await getBessState(site.id);
+        const alarms = await getActiveAlarms(site.id);
+        result.push({
+          id: site.id,
+          slug: site.slug,
+          name: site.name,
+          description: site.description,
+          bessCount: site.bessCount,
+          bessCapacityKwh: site.bessCapacityKwh,
+          bessModel: site.bessModel,
+          pumpCount: site.pumpCount,
+          pumpPowerCv: site.pumpPowerCv,
+          pumpDescription: site.pumpDescription,
+          controlMode: site.controlMode,
+          fusionsolarConfigured: !!(site.fusionsolarDeviceIds && site.fusionsolarPlantCode),
+          fusionsolarPlantCode: site.fusionsolarPlantCode ?? "",
+          fusionsolarDeviceIds: site.fusionsolarDeviceIds ?? "",
+          fusionsolarInverterIds: site.fusionsolarInverterIds ?? "",
+          mqttTopic: site.mqttTopic ?? "",
+          // State summary
+          currentSoc: state?.currentSoc ?? 0,
+          currentPvPower: state?.currentPvPower ?? 0,
+          currentBatteryPower: state?.currentBatteryPower ?? 0,
+          currentLoadPower: state?.currentLoadPower ?? 0,
+          loadStatus: state?.loadStatus ?? "off",
+          mode: state?.mode ?? "manual",
+          healthStatus: state?.healthStatus ?? "healthy",
+          mqttConnected: state?.mqttConnected ?? false,
+          sonoffOnline: state?.sonoffOnline ?? false,
+          activeAlarms: alarms.length,
+        });
+      }
+      return result;
+    }),
+
+    // ── Get site details by slug ──
+    siteDetail: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return null;
+        const state = await getBessState(site.id);
+        const config = await getBessConfig(site.id);
+        const alarms = await getActiveAlarms(site.id);
+        const cooldownMs = (config?.cooldownMinutes ?? 5) * 60 * 1000;
+        const cooldownRemaining = state?.lastManeuverAt
+          ? Math.max(0, cooldownMs - (Date.now() - new Date(state.lastManeuverAt).getTime()))
+          : 0;
+        return {
+          site: {
+            id: site.id,
+            slug: site.slug,
+            name: site.name,
+            description: site.description,
+            bessCount: site.bessCount,
+            bessCapacityKwh: site.bessCapacityKwh,
+            bessModel: site.bessModel,
+            pumpCount: site.pumpCount,
+            pumpPowerCv: site.pumpPowerCv,
+            pumpDescription: site.pumpDescription,
+            controlMode: site.controlMode,
+            fusionsolarConfigured: !!(site.fusionsolarDeviceIds && site.fusionsolarPlantCode),
+          },
+          state: state ? {
+            loadStatus: state.loadStatus,
+            mode: state.mode,
+            currentSoc: state.currentSoc,
+            currentSoh: state.currentSoh,
+            currentBatteryPower: state.currentBatteryPower,
+            currentTemperature: state.currentTemperature,
+            currentPvPower: state.currentPvPower,
+            currentLoadPower: state.currentLoadPower,
+            lowCounter: state.lowCounter,
+            highCounter: state.highCounter,
+            lastManeuverAt: state.lastManeuverAt,
+            healthStatus: state.healthStatus,
+            lastDecision: state.lastDecision,
+            mqttConnected: state.mqttConnected,
+            sonoffOnline: state.sonoffOnline,
+            sonoffPower: state.sonoffPower ?? "UNKNOWN",
+            lastTelemetryAt: (state as any).lastTelemetryAt ?? null,
+            socSource: (state as any).socSource ?? "unknown",
+            cooldownRemaining,
+          } : null,
+          config: config ? {
+            socLowLimit: config.socLowLimit,
+            socHighLimit: config.socHighLimit,
+            cooldownMinutes: config.cooldownMinutes,
+            lowReadingsRequired: config.lowReadingsRequired,
+            highReadingsRequired: config.highReadingsRequired,
+            presetName: config.presetName,
+          } : {
+            socLowLimit: 15, socHighLimit: 20, cooldownMinutes: 5,
+            lowReadingsRequired: 2, highReadingsRequired: 3, presetName: "padrao",
+          },
+          activeAlarms: alarms,
+        };
+      }),
+
+    // ── Manual command: on/off for a site ──
+    command: publicProcedure
+      .input(z.object({ slug: z.string(), action: z.enum(["on", "off"]) }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado.", loadStatus: "off" as const };
+
+        const state = await getBessState(site.id);
+        const currentStatus = state?.loadStatus ?? "off";
+
+        // Anti-duplication
+        if (currentStatus === input.action) {
+          return {
+            success: true, wasDuplicate: true,
+            message: `Carga já está ${input.action === "on" ? "LIGADA" : "DESLIGADA"}.`,
+            loadStatus: currentStatus,
+          };
+        }
+
+        // Cooldown check
+        const config = await getBessConfig(site.id);
+        const cooldownMs = (config?.cooldownMinutes ?? 5) * 60 * 1000;
+        if (state?.lastManeuverAt) {
+          const elapsed = Date.now() - new Date(state.lastManeuverAt).getTime();
+          if (elapsed < cooldownMs) {
+            const remaining = Math.ceil((cooldownMs - elapsed) / 1000);
+            return {
+              success: false, wasDuplicate: false,
+              message: `Cooldown ativo. Aguarde ${remaining}s para proteger o contator.`,
+              loadStatus: currentStatus, cooldownRemaining: remaining,
+            };
+          }
+        }
+
+        // Manual mode: send MQTT if topic is configured, otherwise just register
+        if (site.controlMode === "manual") {
+          let mqttManualResult: { success: boolean; message: string } | null = null;
+          // In manual mode, still send MQTT if the site has a topic configured
+          if (site.mqttTopic && isMqttConfigured()) {
+            mqttManualResult = await sendMqttCommand(
+              site.id, site.mqttTopic,
+              input.action === "on" ? "ON" : "OFF",
+              "manual_cmd",
+            );
+          }
+          await upsertBessState(site.id, {
+            loadStatus: input.action,
+            lastManeuverAt: new Date(),
+            lastDecision: mqttManualResult
+              ? `Comando manual MQTT: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} — ${mqttManualResult.message}`
+              : `Comando manual registrado: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"}. (Sem MQTT — atuação local necessária)`,
+          });
+          await addEvent(site.id, input.action === "on" ? "MANUAL_CMD_ON" : "MANUAL_CMD_OFF",
+            mqttManualResult
+              ? `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} via MQTT (modo manual) — ${mqttManualResult.message}`
+              : `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} — registro manual (sem atuação remota)`);
+          return {
+            success: mqttManualResult ? mqttManualResult.success : true,
+            wasDuplicate: false,
+            message: mqttManualResult
+              ? mqttManualResult.message
+              : `Comando registrado. Sem MQTT configurado — a atuação física é necessária.`,
+            loadStatus: input.action,
+          };
+        }
+
+        // Execute command via MQTT for auto_mqtt sites
+        let mqttResult: { success: boolean; message: string } | null = null;
+        if (site.mqttTopic && isMqttConfigured()) {
+          mqttResult = await sendMqttCommand(
+            site.id, site.mqttTopic,
+            input.action === "on" ? "ON" : "OFF",
+            "manual_cmd",
+          );
+        }
+
+        await upsertBessState(site.id, {
+          loadStatus: input.action,
+          lastManeuverAt: new Date(),
+          lastDecision: mqttResult
+            ? `Comando MQTT: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} — ${mqttResult.message}`
+            : `Comando manual: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} pelo operador (MQTT não configurado).`,
+        });
+        await addEvent(site.id, input.action === "on" ? "MANUAL_CMD_ON" : "MANUAL_CMD_OFF",
+          mqttResult
+            ? `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} via MQTT — ${mqttResult.message}`
+            : `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} manualmente pelo operador`);
+
+        const cmdSuccess = mqttResult ? mqttResult.success : true;
+        return {
+          success: cmdSuccess, wasDuplicate: false,
+          message: mqttResult
+            ? mqttResult.message
+            : `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} com sucesso (sem MQTT — apenas registro).`,
+          loadStatus: input.action,
+        };
+      }),
+
+    // ── Toggle mode for a site ──
+    toggleMode: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { mode: "manual" as const };
+        const state = await getBessState(site.id);
+        const currentMode = state?.mode ?? "auto";
+        const newMode = currentMode === "auto" ? "manual" : "auto";
+        await upsertBessState(site.id, { mode: newMode });
+        await addEvent(site.id, "MODE_CHANGE", `Modo alterado para ${newMode === "auto" ? "AUTOMÁTICO" : "MANUAL"}`);
+        return { mode: newMode };
+      }),
+
+    // ── SOC readings history for a site ──
+    readings: publicProcedure
+      .input(z.object({ slug: z.string(), hours: z.number().min(1).max(168).default(4) }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return [];
+        const rows = await getReadings(site.id, input.hours);
+        return rows.map(r => ({
+          soc: r.soc,
+          soh: r.soh,
+          batteryPower: r.batteryPower,
+          batteryTemperature: r.batteryTemperature,
+          pvPower: r.pvPower,
+          loadPower: r.loadPower,
+          timestamp: r.createdAt.getTime(),
+        }));
+      }),
+
+    // ── Events for a site ──
+    events: publicProcedure
+      .input(z.object({ slug: z.string().optional() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        if (input.slug) {
+          const site = await getSiteBySlug(input.slug);
+          if (!site) return [];
+          return getRecentEvents(site.id, 30);
+        }
+        return getAllRecentEvents(50);
+      }),
+
+    // ── Alarms (global or per site) ──
+    alarms: publicProcedure
+      .input(z.object({ slug: z.string().optional() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        if (input.slug) {
+          const site = await getSiteBySlug(input.slug);
+          if (!site) return [];
+          return getActiveAlarms(site.id);
+        }
+        return getActiveAlarms();
+      }),
+
+    // ── Statistics for a site ──
+    stats: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { min: 0, max: 0, avg: 0, count: 0 };
+        const readings = await getReadings(site.id, 4);
+        if (readings.length === 0) return { min: 0, max: 0, avg: 0, count: 0 };
+        const socs = readings.map(r => r.soc);
+        return {
+          min: Math.round(Math.min(...socs) * 10) / 10,
+          max: Math.round(Math.max(...socs) * 10) / 10,
+          avg: Math.round((socs.reduce((a, b) => a + b, 0) / socs.length) * 10) / 10,
+          count: socs.length,
+        };
+      }),
+
+    // ── Get config for a site ──
+    getConfig: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { socLowLimit: 15, socHighLimit: 20, cooldownMinutes: 5, lowReadingsRequired: 2, highReadingsRequired: 3, presetName: "padrao" };
+        const config = await getBessConfig(site.id);
+        return config ?? { socLowLimit: 15, socHighLimit: 20, cooldownMinutes: 5, lowReadingsRequired: 2, highReadingsRequired: 3, presetName: "padrao" };
+      }),
+
+    // ── Update config for a site ──
+    updateConfig: publicProcedure
+      .input(z.object({
+        slug: z.string(),
+        socLowLimit: z.number().min(5).max(50),
+        socHighLimit: z.number().min(10).max(60),
+        cooldownMinutes: z.number().min(1).max(30),
+        lowReadingsRequired: z.number().min(1).max(10),
+        highReadingsRequired: z.number().min(1).max(10),
+        presetName: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado." };
+        if (input.socHighLimit - input.socLowLimit < 5) {
+          return { success: false, message: "O SOC de religação deve ser pelo menos 5 p.p. acima do SOC de desligamento." };
+        }
+        const { slug, ...configData } = input;
+        await upsertBessConfig(site.id, configData);
+        await addEvent(site.id, "MODE_CHANGE",
+          `Configuração atualizada: Preset=${input.presetName}, Desliga<=${input.socLowLimit}%, Religa>=${input.socHighLimit}%, Cooldown=${input.cooldownMinutes}min`);
+        return { success: true, message: `Configuração salva com sucesso. Preset: ${input.presetName}.` };
+      }),
+
+    // ── Simulate SOC tick for a site (demo/fallback) ──
+    simulateTick: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { soc: 0, healthStatus: "healthy", loadStatus: "off" };
+        const state = await getBessState(site.id);
+        const config = await getBessConfig(site.id);
+        const socLow = config?.socLowLimit ?? 15;
+        const socHigh = config?.socHighLimit ?? 20;
+        const lowRequired = config?.lowReadingsRequired ?? 2;
+        const highRequired = config?.highReadingsRequired ?? 3;
+        const currentSoc = state?.currentSoc ?? 50;
+
+        const delta = (Math.random() - 0.45) * 2;
+        const newSoc = Math.round(Math.max(5, Math.min(100, currentSoc + delta)) * 10) / 10;
+        const pvPower = Math.round(Math.max(0, 30 * Math.sin(Date.now() / 3600000 * Math.PI) + (Math.random() - 0.5) * 5) * 10) / 10;
+        const battPower = Math.round((-5 + Math.random() * 15) * 10) / 10;
+        const temp = Math.round((28 + Math.random() * 6) * 10) / 10;
+
+        await addReading(site.id, {
+          soc: newSoc, soh: state?.currentSoh ?? 99, batteryPower: battPower,
+          batteryTemperature: temp, pvPower, loadPower: Math.abs(battPower) + pvPower * 0.3,
+        });
+
+        let lowCounter = state?.lowCounter ?? 0;
+        let highCounter = state?.highCounter ?? 0;
+        let healthStatus: "healthy" | "attention" | "degraded" | "critical" = "healthy";
+        let lastDecision = "";
+        let loadStatus = state?.loadStatus ?? "on";
+
+        if (newSoc <= socLow) {
+          lowCounter++;
+          highCounter = 0;
+          if (lowCounter >= lowRequired && loadStatus === "on") {
+            loadStatus = "off"; lowCounter = 0; healthStatus = "critical";
+            lastDecision = `SOC em ${newSoc}% — CARGA DESLIGADA automaticamente (${lowRequired} leituras <= ${socLow}%).`;
+            await addEvent(site.id, "LOAD_OFF", lastDecision);
+            // ── Send MQTT command to Sonoff (auto OFF) ──
+            if (site.controlMode === "auto_mqtt" && site.mqttTopic) {
+              await sendMqttCommand(site.id, site.mqttTopic, "OFF", `autoTick:${site.slug}`);
+            }
+            // Notify owner of critical auto-shutdown
+            notifyCriticalAlarm(site.name, `CARGA DESLIGADA automaticamente.\n\nSOC: ${newSoc}%\nLimite: ${socLow}%\nLeituras consecutivas: ${lowRequired}\n\nA carga será religada quando o SOC atingir ${socHigh}%.`);
+          } else {
+            healthStatus = lowCounter >= lowRequired ? "critical" : "attention";
+            lastDecision = `SOC em ${newSoc}% — abaixo do limite (${socLow}%). Contador LOW: ${lowCounter}/${lowRequired}.`;
+          }
+        } else if (newSoc >= socHigh) {
+          highCounter++;
+          lowCounter = 0;
+          if (highCounter >= highRequired && loadStatus === "off") {
+            loadStatus = "on"; highCounter = 0; healthStatus = "healthy";
+            lastDecision = `SOC em ${newSoc}% — CARGA RELIGADA automaticamente (${highRequired} leituras >= ${socHigh}%).`;
+            await addEvent(site.id, "LOAD_ON", lastDecision);
+            // ── Send MQTT command to Sonoff (auto ON) ──
+            if (site.controlMode === "auto_mqtt" && site.mqttTopic) {
+              await sendMqttCommand(site.id, site.mqttTopic, "ON", `autoTick:${site.slug}`);
+            }
+          } else if (highCounter >= highRequired && loadStatus === "on") {
+            highCounter = highRequired; healthStatus = "healthy";
+            lastDecision = `SOC em ${newSoc}% — acima do limite (${socHigh}%). Carga já ligada. Estabilizado.`;
+          } else {
+            healthStatus = "healthy";
+            lastDecision = `SOC em ${newSoc}% — acima do limite (${socHigh}%). Contador HIGH: ${highCounter}/${highRequired}.`;
+          }
+        } else {
+          healthStatus = lowCounter > 0 ? "degraded" : "attention";
+          lastDecision = `SOC em ${newSoc}% — zona morta (${socLow + 1}-${socHigh - 1}%). Estado mantido.`;
+        }
+
+        await upsertBessState(site.id, {
+          currentSoc: newSoc, currentBatteryPower: battPower, currentTemperature: temp,
+          currentPvPower: pvPower, currentLoadPower: Math.abs(battPower) + pvPower * 0.3,
+          loadStatus, lowCounter, highCounter, healthStatus, lastDecision,
+          lastManeuverAt: (loadStatus !== (state?.loadStatus ?? "on")) ? new Date() : undefined,
+        });
+
+        return { soc: newSoc, healthStatus, loadStatus };
+      }),
+
+    // ═══════════════════════════════════════════════════════
+    // Energy Trend (daily chart like FusionSolar)
+    // ═══════════════════════════════════════════════════════
+
+    energyTrend: publicProcedure
+      .input(z.object({ slug: z.string(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, points: [], yieldKwh: 0 };
+
+        const readings = await getReadingsByDate(site.id, input.date);
+
+        // Map readings to raw chart points
+        const rawPoints = readings.map((r: any) => {
+          const t = new Date(r.createdAt);
+          const battPower = r.batteryPower ?? 0;
+          return {
+            timestamp: t.getTime(),
+            pvOutput: Math.max(0, r.pvPower ?? 0),
+            essDischarge: battPower < 0 ? Math.abs(battPower) : 0,
+            essCharge: battPower > 0 ? battPower : 0,
+            loadPower: r.loadPower ?? 0,
+            soc: r.soc ?? 0,
+          };
+        });
+
+        // Aggregate into 5-minute buckets to reduce noise
+        const BUCKET_MS = 5 * 60 * 1000; // 5 minutes
+        const bucketMap = new Map<number, typeof rawPoints>();
+        for (const p of rawPoints) {
+          const bucketKey = Math.floor(p.timestamp / BUCKET_MS) * BUCKET_MS;
+          if (!bucketMap.has(bucketKey)) bucketMap.set(bucketKey, []);
+          bucketMap.get(bucketKey)!.push(p);
+        }
+
+        const points = Array.from(bucketMap.entries())
+          .sort(([a], [b]) => a - b)
+          .map(([bucketTs, bucket]) => {
+            const avg = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
+            const t = new Date(bucketTs);
+            const hh = String(t.getHours()).padStart(2, "0");
+            const mm = String(t.getMinutes()).padStart(2, "0");
+            return {
+              time: `${hh}:${mm}`,
+              timestamp: bucketTs,
+              pvOutput: Math.round(avg(bucket.map(b => b.pvOutput)) * 100) / 100,
+              essDischarge: Math.round(avg(bucket.map(b => b.essDischarge)) * 100) / 100,
+              essCharge: Math.round(avg(bucket.map(b => b.essCharge)) * 100) / 100,
+              loadPower: Math.round(avg(bucket.map(b => b.loadPower)) * 100) / 100,
+              soc: Math.round(avg(bucket.map(b => b.soc)) * 10) / 10,
+            };
+          });
+
+        // Calculate daily yield (sum of PV output * interval in hours)
+        let yieldKwh = 0;
+        for (let i = 1; i < points.length; i++) {
+          const dt = (points[i].timestamp - points[i - 1].timestamp) / 3600000; // hours
+          yieldKwh += points[i].pvOutput * dt;
+        }
+
+        return { success: true, points, yieldKwh: Math.round(yieldKwh * 100) / 100 };
+      }),
+
+    // ═══════════════════════════════════════════════════════
+    // FusionSolar Real Integration Endpoints
+    // ═══════════════════════════════════════════════════════
+
+    // ── Check FusionSolar integration status ──
+    fusionsolarStatus: publicProcedure.query(async () => {
+      const configured = isFusionSolarConfigured();
+      if (!configured) {
+        return {
+          configured: false,
+          connected: false,
+          message: "Credenciais FusionSolar não configuradas. Defina FUSIONSOLAR_USERNAME e FUSIONSOLAR_SYSTEM_CODE.",
+        };
+      }
+      try {
+        const client = getFusionSolarClient();
+        const loggedIn = await client.login();
+        return {
+          configured: true,
+          connected: loggedIn,
+          message: loggedIn ? "Conectado à FusionSolar API." : "Falha na autenticação FusionSolar.",
+        };
+      } catch (error) {
+        return {
+          configured: true,
+          connected: false,
+          message: `Erro ao conectar: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }),
+
+    // ── Discover stations and devices from FusionSolar ──
+    fusionsolarDiscover: publicProcedure.mutation(async () => {
+      if (!isFusionSolarConfigured()) {
+        return { success: false, message: "FusionSolar não configurada.", stations: [], devices: [] };
+      }
+      try {
+        const client = getFusionSolarClient();
+        const stations = await client.getStationList();
+        const allDevices: Array<{ stationCode: string; devices: any[] }> = [];
+        for (const station of stations) {
+          const devices = await client.getDeviceList(station.stationCode);
+          allDevices.push({ stationCode: station.stationCode, devices });
+        }
+        return { success: true, message: `Encontradas ${stations.length} planta(s).`, stations, devices: allDevices };
+      } catch (error) {
+        return { success: false, message: `Erro: ${error instanceof Error ? error.message : String(error)}`, stations: [], devices: [] };
+      }
+    }),
+
+    // ── Fetch real-time data from FusionSolar for a site ──
+    fusionsolarFetch: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        return fetchFusionSolarData(input.slug);
+      }),
+
+    // ── Fetch alarms from FusionSolar for a site ──
+    fusionsolarAlarms: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site || !site.fusionsolarPlantCode || !isFusionSolarConfigured()) {
+          return { configured: false, alarms: [] };
+        }
+        try {
+          const client = getFusionSolarClient();
+          const now = Date.now();
+          const alarms = await client.getAlarmList(
+            site.fusionsolarPlantCode,
+            now - 7 * 24 * 60 * 60 * 1000, // last 7 days
+            now
+          );
+          return {
+            configured: true,
+            alarms: alarms.map(a => ({
+              id: a.alarmId,
+              name: a.alarmName,
+              device: a.devName,
+              severity: a.severity === 1 ? "CRITICAL" : a.severity === 2 ? "MAJOR" : a.severity === 3 ? "MINOR" : "WARNING",
+              time: a.raiseTime,
+              station: a.stationName,
+            })),
+          };
+        } catch (error) {
+          return { configured: true, alarms: [] };
+        }
+      }),
+
+    // ── Configure FusionSolar device IDs for a site ──
+    configureSite: publicProcedure
+      .input(z.object({
+        slug: z.string(),
+        fusionsolarDeviceIds: z.string().optional(),
+        fusionsolarInverterIds: z.string().optional(),
+        fusionsolarPlantCode: z.string().optional(),
+        mqttTopic: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado." };
+
+        const updateData: Record<string, unknown> = {};
+        if (input.fusionsolarDeviceIds !== undefined) updateData.fusionsolarDeviceIds = input.fusionsolarDeviceIds;
+        if (input.fusionsolarInverterIds !== undefined) updateData.fusionsolarInverterIds = input.fusionsolarInverterIds;
+        if (input.fusionsolarPlantCode !== undefined) updateData.fusionsolarPlantCode = input.fusionsolarPlantCode;
+        if (input.mqttTopic !== undefined) updateData.mqttTopic = input.mqttTopic;
+
+        if (Object.keys(updateData).length === 0) {
+          return { success: false, message: "Nenhum campo para atualizar." };
+        }
+
+        await upsertSite({ slug: input.slug, ...updateData } as any);
+        await addEvent(site.id, "CONFIG_CHANGE", `Configuração do site atualizada: ${JSON.stringify(updateData)}`);
+        return { success: true, message: "Configuração do site atualizada com sucesso." };
+      }),
+
+    // ── Manual SOC update ──
+    updateSoc: publicProcedure
+      .input(z.object({
+        slug: z.string(),
+        soc: z.number().min(0).max(100),
+      }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado." };
+
+        await upsertBessState(site.id, {
+          currentSoc: input.soc,
+          socSource: "manual",
+          lastTelemetryAt: new Date(),
+        });
+
+        await addEvent(site.id, "SOC_MANUAL", `SOC atualizado manualmente para ${input.soc.toFixed(1)}%`);
+        console.log(`[ManualSOC] ${site.slug}: SOC atualizado para ${input.soc.toFixed(1)}% (fonte=manual)`);
+
+        return { success: true, message: `SOC atualizado para ${input.soc.toFixed(1)}%` };
+      }),
+
+    // ── Integration status summary ──
+    integrationStatus: publicProcedure.query(async () => {
+      await ensureSeeded();
+      const fsConfigured = isFusionSolarConfigured();
+      let fsConnected = false;
+      if (fsConfigured) {
+        try {
+          const client = getFusionSolarClient();
+          fsConnected = await client.login();
+        } catch { /* ignore */ }
+      }
+      const sites = await getAllSites();
+      const siteStatuses = [];
+      for (const site of sites) {
+        const state = await getBessState(site.id);
+        siteStatuses.push({
+          slug: site.slug,
+          name: site.name,
+          fusionsolarConfigured: !!(site.fusionsolarDeviceIds && site.fusionsolarPlantCode),
+          mqttConfigured: !!site.mqttTopic,
+          mqttConnected: state?.mqttConnected ?? false,
+          sonoffOnline: state?.sonoffOnline ?? false,
+          controlMode: site.controlMode,
+        });
+      }
+      return {
+        fusionsolar: { configured: fsConfigured, connected: fsConnected },
+        mqtt: {
+          configured: isMqttConfigured(),
+          connected: isMqttConfigured() ? getMqttClient().isConnected : false,
+          brokerHost: process.env.MQTT_BROKER_HOST ?? "não configurado",
+          brokerPort: parseInt(process.env.MQTT_BROKER_PORT ?? "1883", 10),
+        },
+        sites: siteStatuses,
+      };
+    }),
+
+    // ── Reports: list reports ──
+    reports: publicProcedure
+      .input(z.object({
+        slug: z.string().optional(),
+        limit: z.number().min(1).max(200).default(20),
+        page: z.number().min(1).default(1),
+      }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        let siteId: number | undefined;
+        if (input.slug) {
+          const site = await getSiteBySlug(input.slug);
+          if (site) siteId = site.id;
+        }
+        const offset = (input.page - 1) * input.limit;
+        const [reports, totalCount] = await Promise.all([
+          getReports(siteId, input.limit, offset),
+          getReportsCount(siteId),
+        ]);
+        return {
+          items: reports.map(r => ({
+            id: r.id,
+            siteId: r.siteId,
+            reportType: r.reportType,
+            periodStart: r.periodStart,
+            periodEnd: r.periodEnd,
+            avgSoc: r.avgSoc,
+            minSoc: r.minSoc,
+            maxSoc: r.maxSoc,
+            avgPvPower: r.avgPvPower,
+            maxPvPower: r.maxPvPower,
+            avgLoadPower: r.avgLoadPower,
+            maxLoadPower: r.maxLoadPower,
+            avgBatteryPower: r.avgBatteryPower,
+            avgTemperature: r.avgTemperature,
+            maxTemperature: r.maxTemperature,
+            totalReadings: r.totalReadings,
+            loadOnMinutes: r.loadOnMinutes,
+            estimatedEnergyKwh: r.estimatedEnergyKwh,
+            totalEvents: r.totalEvents,
+            totalAlarms: r.totalAlarms,
+            maneuverCount: r.maneuverCount,
+            notificationSent: r.notificationSent,
+            createdAt: r.createdAt,
+          })),
+          totalCount,
+          page: input.page,
+          pageSize: input.limit,
+          totalPages: Math.ceil(totalCount / input.limit),
+        };
+      }),
+
+    // ── Reports: trend data for charts ──
+    reportTrends: publicProcedure
+      .input(z.object({
+        slug: z.string().optional(),
+        reportType: z.enum(["daily", "weekly"]).optional(),
+        limit: z.number().min(1).max(500).default(100),
+        sinceDays: z.number().min(1).max(365).optional(),
+      }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        let siteId: number | undefined;
+        if (input.slug) {
+          const site = await getSiteBySlug(input.slug);
+          if (site) siteId = site.id;
+        }
+        let since: Date | undefined;
+        if (input.sinceDays) {
+          since = new Date(Date.now() - input.sinceDays * 24 * 60 * 60 * 1000);
+        }
+        return getReportTrends({
+          siteId,
+          reportType: input.reportType,
+          limit: input.limit,
+          since,
+        });
+      }),
+
+    // ── Reports: generate on-demand report ──
+    generateReport: publicProcedure
+      .input(z.object({
+        slug: z.string(),
+        reportType: z.enum(["daily", "weekly"]),
+      }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado." };
+
+        const now = new Date();
+        const periodStart = input.reportType === "daily"
+          ? new Date(now.getTime() - 24 * 60 * 60 * 1000)
+          : new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+        const result = await generateSiteReport(
+          site.id, site.name, input.reportType, periodStart, now,
+          { skipDedup: true } // On-demand: always generate
+        );
+        return {
+          success: result.success,
+          message: result.message,
+          report: result.report ? {
+            avgSoc: result.report.avgSoc,
+            minSoc: result.report.minSoc,
+            maxSoc: result.report.maxSoc,
+            loadOnMinutes: result.report.loadOnMinutes,
+            estimatedEnergyKwh: result.report.estimatedEnergyKwh,
+            totalEvents: result.report.totalEvents,
+            totalAlarms: result.report.totalAlarms,
+            maneuverCount: result.report.maneuverCount,
+          } : null,
+        };
+      }),
+
+    // ── Reports: generate all + notify ──
+    generateAllReports: publicProcedure
+      .input(z.object({ reportType: z.enum(["daily", "weekly"]) }))
+      .mutation(async ({ input }) => {
+        await ensureSeeded();
+        const { results, notified } = await generateAndNotify(input.reportType, { skipDedup: true });
+        return {
+          success: results.some(r => r.success),
+          notified,
+          reports: results.map(r => ({
+            siteName: r.siteName,
+            success: r.success,
+            message: r.message,
+          })),
+        };
+      }),
+
+    // ── Scheduler Settings ──
+    schedulerSettings: publicProcedure
+      .query(async () => {
+        return getSchedulerSettings();
+      }),
+
+    updateSchedulerSettings: publicProcedure
+      .input(z.object({
+        enabled: z.boolean().optional(),
+        dailyHour: z.number().min(0).max(23).optional(),
+        weeklyDay: z.number().min(0).max(6).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        if (input.enabled !== undefined) {
+          await upsertSetting(SETTING_SCHEDULER_ENABLED, String(input.enabled), "Habilitar/desabilitar scheduler automático de relatórios");
+        }
+        if (input.dailyHour !== undefined) {
+          await upsertSetting(SETTING_DAILY_HOUR, String(input.dailyHour), "Hora do dia (0-23) para gerar relatórios diários");
+        }
+        if (input.weeklyDay !== undefined) {
+          await upsertSetting(SETTING_WEEKLY_DAY, String(input.weeklyDay), "Dia da semana (0=Dom, 1=Seg, ..., 6=Sáb) para relatórios semanais");
+        }
+        return getSchedulerSettings();
+      }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;

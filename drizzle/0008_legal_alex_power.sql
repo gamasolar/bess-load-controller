@@ -1,0 +1,2 @@
+ALTER TABLE `bess_state` ADD `lastTelemetryAt` timestamp;--> statement-breakpoint
+ALTER TABLE `bess_state` ADD `socSource` enum('fusionsolar','manual','simulation','unknown') DEFAULT 'unknown' NOT NULL;

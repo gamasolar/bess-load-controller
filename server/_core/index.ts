@@ -1,0 +1,89 @@
+import "dotenv/config";
+import express from "express";
+import { createServer } from "http";
+import path from "node:path";
+import net from "net";
+import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { registerAuthRoutes } from "../auth";
+import { appRouter, startAutoFetch, startMqttStateSync } from "../routers";
+import { createContext } from "./context";
+import { serveStatic, setupVite } from "./vite";
+import { startReportScheduler } from "../report-generator";
+
+function getStorageRoot(): string {
+  const override = process.env.STORAGE_DIR;
+  if (override && override.trim().length > 0) {
+    return path.resolve(override.trim());
+  }
+  return path.resolve(process.cwd(), "storage-data");
+}
+
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(port, () => {
+      server.close(() => resolve(true));
+    });
+    server.on("error", () => resolve(false));
+  });
+}
+
+async function findAvailablePort(startPort: number = 3000): Promise<number> {
+  for (let port = startPort; port < startPort + 20; port++) {
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available port found starting from ${startPort}`);
+}
+
+async function startServer() {
+  const app = express();
+  app.set('trust proxy', 1);
+  const server = createServer(app);
+
+  // Configure body parser with larger size limit for file uploads
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+  // Static storage for generated PDFs / report assets (replaces Manus S3 proxy).
+  app.use("/storage", express.static(getStorageRoot()));
+
+  // Local email/password auth: POST /api/auth/{login,register}, GET /api/auth/status
+  registerAuthRoutes(app);
+
+  // tRPC API
+  app.use(
+    "/api/trpc",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext,
+    }),
+  );
+
+  // development mode uses Vite, production mode uses static files
+  if (process.env.NODE_ENV === "development") {
+    await setupVite(app, server);
+  } else {
+    serveStatic(app);
+  }
+
+  const preferredPort = parseInt(process.env.PORT || "3000", 10);
+  const port = await findAvailablePort(preferredPort);
+
+  if (port !== preferredPort) {
+    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+  }
+
+  server.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}/`);
+    // Start automatic report scheduler (daily + weekly)
+    startReportScheduler();
+    // Start FusionSolar auto-fetch (every 15 minutes by default)
+    startAutoFetch();
+    // Start MQTT polling + DB sync for real Sonoff state
+    startMqttStateSync();
+  });
+}
+
+startServer().catch(console.error);

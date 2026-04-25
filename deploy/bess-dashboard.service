@@ -1,0 +1,27 @@
+[Unit]
+Description=BESS Load Controller Dashboard
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=gamaserver
+WorkingDirectory=/opt/bess-dashboard
+EnvironmentFile=/opt/bess-dashboard/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bess-dashboard
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/bess-dashboard/storage-data /opt/bess-dashboard/dist
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

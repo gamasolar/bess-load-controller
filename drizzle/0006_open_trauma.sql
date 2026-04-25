@@ -1,0 +1,1 @@
+ALTER TABLE `bess_sites` ADD `fusionsolarInverterIds` text;
