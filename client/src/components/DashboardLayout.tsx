@@ -26,14 +26,8 @@ import {
   LayoutDashboard,
   LogOut,
   PanelLeft,
-  Droplets,
-  Mountain,
-  Bell,
-  Settings,
   Zap,
   Battery,
-  Clock,
-  BarChart3,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -42,14 +36,6 @@ import { Button } from "./ui/button";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Visão Geral", path: "/" },
-  { icon: Droplets, label: "Piscinão", path: "/site/piscinao", badge: "2x BESS" },
-  { icon: Mountain, label: "Barragem", path: "/site/barragem", badge: "1x BESS" },
-];
-
-const secondaryItems = [
-  { icon: Clock, label: "Histórico", path: "/historico" },
-  { icon: BarChart3, label: "Relatórios", path: "/relatorios" },
-  { icon: Settings, label: "Sistema", path: "/sistema" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -222,30 +208,6 @@ function DashboardLayoutContent({
                           {item.badge}
                         </span>
                       )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-
-            <SidebarSeparator className="my-2" />
-
-            {/* Secondary navigation */}
-            <SidebarMenu className="px-2 py-1">
-              {secondaryItems.map((item) => {
-                const isActive = location === item.path;
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => setLocation(item.path)}
-                      tooltip={item.label}
-                      className="h-10 transition-all font-normal"
-                    >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                      />
-                      <span className="flex-1">{item.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );

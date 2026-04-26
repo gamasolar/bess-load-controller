@@ -2,7 +2,10 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
+import { eq, desc } from "drizzle-orm";
+import { bessActions, bessConfig as bessConfigTable } from "../drizzle/schema";
 import {
+  getDb,
   getAllSites,
   getSiteBySlug,
   getBessState,
@@ -890,6 +893,114 @@ export const appRouter = router({
         await addEvent(site.id, "MODE_CHANGE",
           `Configuração atualizada: Preset=${input.presetName}, Desliga<=${input.socLowLimit}%, Religa>=${input.socHighLimit}%, Cooldown=${input.cooldownMinutes}min`);
         return { success: true, message: `Configuração salva com sucesso. Preset: ${input.presetName}.` };
+      }),
+
+    // ─── MVP v2 endpoints ───
+
+    // List actions log (audit) for a site
+    getActions: publicProcedure
+      .input(z.object({ slug: z.string(), limit: z.number().min(1).max(200).default(50) }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return [];
+        const db = await getDb();
+        if (!db) return [];
+        const rows = await db
+          .select()
+          .from(bessActions)
+          .where(eq(bessActions.siteId, site.id))
+          .orderBy(desc(bessActions.timestamp))
+          .limit(input.limit);
+        return rows;
+      }),
+
+    // Update v2 config fields (additive — v1 fields untouched)
+    updateConfigV2: publicProcedure
+      .input(z.object({
+        slug: z.string(),
+        socMinDesliga: z.number().int().min(5).max(60).optional(),
+        socMinReliga: z.number().int().min(10).max(80).optional(),
+        socBlackout: z.number().int().min(5).max(40).optional(),
+        horarioLiberacao: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+        horarioCorte: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+        margemZonaCritica: z.number().int().min(0).max(20).optional(),
+        intervaloPadrao: z.number().int().min(2).max(60).optional(),
+        intervaloCritico: z.number().int().min(1).max(15).optional(),
+        cooldownAcao: z.number().int().min(1).max(30).optional(),
+        maxSemTelemetria: z.number().int().min(5).max(120).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado." };
+
+        const db = await getDb();
+        if (!db) return { success: false, message: "DB indisponível." };
+
+        // Carrega config atual pra validação cruzada
+        const current = (await db.select().from(bessConfigTable).where(eq(bessConfigTable.siteId, site.id)).limit(1))[0];
+        if (!current) return { success: false, message: "Config não encontrada." };
+
+        const next = {
+          socMinDesliga: input.socMinDesliga ?? current.socMinDesliga,
+          socMinReliga: input.socMinReliga ?? current.socMinReliga,
+          socBlackout: input.socBlackout ?? current.socBlackout,
+          horarioLiberacao: input.horarioLiberacao ?? current.horarioLiberacao,
+          horarioCorte: input.horarioCorte ?? current.horarioCorte,
+          margemZonaCritica: input.margemZonaCritica ?? current.margemZonaCritica,
+          intervaloPadrao: input.intervaloPadrao ?? current.intervaloPadrao,
+          intervaloCritico: input.intervaloCritico ?? current.intervaloCritico,
+          cooldownAcao: input.cooldownAcao ?? current.cooldownAcao,
+          maxSemTelemetria: input.maxSemTelemetria ?? current.maxSemTelemetria,
+        };
+
+        if (next.socMinReliga - next.socMinDesliga < 3) {
+          return { success: false, message: "socMinReliga deve ser pelo menos 3 p.p. acima de socMinDesliga (histerese)." };
+        }
+        if (next.socBlackout >= next.socMinDesliga) {
+          return { success: false, message: "socBlackout deve ser menor que socMinDesliga." };
+        }
+        if (next.horarioLiberacao >= next.horarioCorte) {
+          return { success: false, message: "horarioLiberacao deve ser anterior a horarioCorte." };
+        }
+
+        await db.update(bessConfigTable).set(next).where(eq(bessConfigTable.siteId, site.id));
+
+        await db.insert(bessActions).values({
+          siteId: site.id,
+          source: "MANUAL",
+          action: "CONFIG_CHANGE",
+          reason: "updateConfigV2",
+          userId: ctx.user?.id ?? null,
+          metadata: next,
+        });
+
+        return { success: true, message: "Configuração v2 atualizada." };
+      }),
+
+    // Toggle controlMode AUTO ↔ MANUAL no bess_config
+    setControlMode: publicProcedure
+      .input(z.object({ slug: z.string(), mode: z.enum(["AUTO", "MANUAL"]) }))
+      .mutation(async ({ input, ctx }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { success: false, message: "Site não encontrado." };
+
+        const db = await getDb();
+        if (!db) return { success: false, message: "DB indisponível." };
+
+        await db.update(bessConfigTable).set({ controlMode: input.mode }).where(eq(bessConfigTable.siteId, site.id));
+
+        await db.insert(bessActions).values({
+          siteId: site.id,
+          source: "MANUAL",
+          action: "MODE_CHANGE",
+          reason: `controlMode → ${input.mode}`,
+          userId: ctx.user?.id ?? null,
+        });
+
+        return { success: true, message: `Modo de controle: ${input.mode}` };
       }),
 
     // ── Simulate SOC tick for a site (demo/fallback) ──

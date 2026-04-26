@@ -8,7 +8,6 @@ import { registerAuthRoutes } from "../auth";
 import { appRouter, startAutoFetch, startMqttStateSync } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { startReportScheduler } from "../report-generator";
 import { startAdaptivePolling } from "../poll-scheduler";
 
 function getStorageRoot(): string {
@@ -78,8 +77,6 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
-    // Start automatic report scheduler (daily + weekly)
-    startReportScheduler();
     // MVP v2 control loop is gated by env flag — defaults to v1 until
     // validated in Fase 4. Set USE_MVP_V2_CONTROL=true to switch.
     const useMvpV2 = process.env.USE_MVP_V2_CONTROL === "true";
