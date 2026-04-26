@@ -31,37 +31,13 @@ import {
 } from "./db";
 import { getFusionSolarClient, isFusionSolarConfigured } from "./fusionsolar";
 import { getMqttClient, isMqttConfigured } from "./mqtt-tasmota";
+import { getSiteRuntimeState, decideAction } from "./control-engine";
 import { notifyOwner } from "./_core/notification";
 import { generateSiteReport, generateAllReports, generateAndNotify, getSchedulerSettings, SETTING_SCHEDULER_ENABLED, SETTING_DAILY_HOUR, SETTING_WEEKLY_DAY } from "./report-generator";
 
-// ── Shared MQTT dispatch helper ──
-// Used by both manual command and automatic simulateTick to send ON/OFF to Sonoff
-export async function sendMqttCommand(
-  siteId: number,
-  mqttTopic: string,
-  action: "ON" | "OFF",
-  context: string = "manual",
-): Promise<{ success: boolean; message: string }> {
-  if (!isMqttConfigured()) {
-    return { success: false, message: "MQTT não configurado no servidor." };
-  }
-  try {
-    const mqtt = getMqttClient();
-    const result = await mqtt.sendCommand(mqttTopic, action);
-    // Update MQTT connection state in DB
-    const deviceState = mqtt.getDeviceState(mqttTopic);
-    await upsertBessState(siteId, {
-      mqttConnected: mqtt.isConnected,
-      sonoffOnline: deviceState?.online ?? false,
-    });
-    console.log(`[MQTT:${context}] siteId=${siteId}: ${action} → ${result.message}`);
-    return result;
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    console.error(`[MQTT:${context}] siteId=${siteId}: ${action} failed — ${errMsg}`);
-    return { success: false, message: `Falha MQTT: ${errMsg}` };
-  }
-}
+// Re-exported for backwards compat (mqtt-dispatch.test.ts imports from "./routers")
+export { sendMqttCommand } from "./mqtt-dispatch";
+import { sendMqttCommand } from "./mqtt-dispatch";
 
 // ── Notification helper for critical alarms ──
 async function notifyCriticalAlarm(siteName: string, message: string) {
@@ -641,6 +617,65 @@ export const appRouter = router({
             lowReadingsRequired: 2, highReadingsRequired: 3, presetName: "padrao",
           },
           activeAlarms: alarms,
+        };
+      }),
+
+    // ── MVP v2: Unified site status (UI Home v2 polls this every 30s) ──
+    getSiteStatus: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const runtime = await getSiteRuntimeState(input.slug);
+        if (!runtime) return null;
+        const decision = decideAction(runtime, new Date());
+        const cooldownRemainingMs = runtime.state.cooldownUntil
+          ? Math.max(0, runtime.state.cooldownUntil.getTime() - Date.now())
+          : 0;
+        return {
+          site: {
+            id: runtime.site.id,
+            slug: runtime.site.slug,
+            name: runtime.site.name,
+            mqttTopic: runtime.site.mqttTopic,
+            fusionsolarConfigured: !!(runtime.site.fusionsolarDeviceIds && runtime.site.fusionsolarPlantCode),
+          },
+          config: {
+            socMinDesliga: runtime.config.socMinDesliga,
+            socMinReliga: runtime.config.socMinReliga,
+            socBlackout: runtime.config.socBlackout,
+            horarioLiberacao: runtime.config.horarioLiberacao,
+            horarioCorte: runtime.config.horarioCorte,
+            margemZonaCritica: runtime.config.margemZonaCritica,
+            intervaloPadrao: runtime.config.intervaloPadrao,
+            intervaloCritico: runtime.config.intervaloCritico,
+            cooldownAcao: runtime.config.cooldownAcao,
+            maxSemTelemetria: runtime.config.maxSemTelemetria,
+            controlMode: runtime.config.controlMode,
+          },
+          state: {
+            loadStatus: runtime.state.loadStatus,
+            sonoffPower: runtime.state.sonoffPower,
+            sonoffOnline: runtime.state.sonoffOnline,
+            mqttConnected: runtime.state.mqttConnected,
+            currentSoc: runtime.state.currentSoc,
+            currentBatteryPower: runtime.state.currentBatteryPower,
+            currentTemperature: runtime.state.currentTemperature,
+            healthStatus: runtime.state.healthStatus,
+            lastDecision: runtime.state.lastDecision,
+            lastTelemetryAt: runtime.state.lastTelemetryAt,
+            cooldownUntil: runtime.state.cooldownUntil,
+            pumpOnSinceTimestamp: runtime.state.pumpOnSinceTimestamp,
+            pumpOnSecondsToday: runtime.state.pumpOnSecondsToday,
+          },
+          derived: {
+            soc: runtime.soc,
+            socSource: runtime.socSource,
+            socAgeSeconds: runtime.socAgeSeconds,
+            pumpState: runtime.pumpState,
+            inCriticalZone: runtime.inCriticalZone,
+            cooldownRemainingMs,
+          },
+          nextAction: decision,
         };
       }),
 

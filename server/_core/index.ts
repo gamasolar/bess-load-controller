@@ -9,6 +9,7 @@ import { appRouter, startAutoFetch, startMqttStateSync } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { startReportScheduler } from "../report-generator";
+import { startAdaptivePolling } from "../poll-scheduler";
 
 function getStorageRoot(): string {
   const override = process.env.STORAGE_DIR;
@@ -79,9 +80,16 @@ async function startServer() {
     console.log(`Server running on http://localhost:${port}/`);
     // Start automatic report scheduler (daily + weekly)
     startReportScheduler();
-    // Start FusionSolar auto-fetch (every 15 minutes by default)
-    startAutoFetch();
-    // Start MQTT polling + DB sync for real Sonoff state
+    // MVP v2 control loop is gated by env flag — defaults to v1 until
+    // validated in Fase 4. Set USE_MVP_V2_CONTROL=true to switch.
+    const useMvpV2 = process.env.USE_MVP_V2_CONTROL === "true";
+    if (useMvpV2) {
+      console.log("[Boot] USE_MVP_V2_CONTROL=true — adaptive polling + control-engine ATIVOS");
+      startAdaptivePolling();
+    } else {
+      startAutoFetch();
+    }
+    // MQTT polling + DB sync runs in both modes (state observation only)
     startMqttStateSync();
   });
 }
