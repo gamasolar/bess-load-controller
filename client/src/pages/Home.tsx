@@ -7,6 +7,10 @@ export default function Home() {
     refetchInterval: 60_000,
   });
 
+  const visibleSites = (sites ?? []).filter(
+    (s) => s.fusionsolarConfigured || !!s.mqttTopic,
+  );
+
   return (
     <div className="space-y-4 max-w-5xl mx-auto px-3 md:px-0 py-4">
       <div>
@@ -28,7 +32,7 @@ export default function Home() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {sites?.map((site) => (
+        {visibleSites.map((site) => (
           <PlantCardV2 key={site.id} slug={site.slug} />
         ))}
       </div>
