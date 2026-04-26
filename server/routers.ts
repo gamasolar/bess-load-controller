@@ -19,6 +19,7 @@ import {
   upsertBessConfig,
   upsertSite,
   seedMultiSiteData,
+  seedDefaultConfigs,
   getReports,
   getReportsByPeriod,
   getLatestReport,
@@ -79,6 +80,7 @@ let seeded = false;
 async function ensureSeeded() {
   if (!seeded) {
     await seedMultiSiteData();
+    await seedDefaultConfigs();
     seeded = true;
   }
 }

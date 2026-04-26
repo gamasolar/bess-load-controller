@@ -121,12 +121,22 @@ export const bessState = mysqlTable("bess_state", {
   sonoffPower: mysqlEnum("sonoffPower", ["ON", "OFF", "UNKNOWN"]).default("UNKNOWN").notNull(),
   lastTelemetryAt: timestamp("lastTelemetryAt"),  // Last time SOC was updated from real FusionSolar data
   socSource: mysqlEnum("socSource", ["fusionsolar", "manual", "simulation", "unknown"]).default("unknown").notNull(),
+  // ─── MVP v2: SOC estimation (Coulomb counting) + cooldown + pump runtime ───
+  socEstimated: float("socEstimated"),
+  lastEstimateAt: timestamp("lastEstimateAt"),
+  dischargeRatePpPerMin: float("dischargeRatePpPerMin"),
+  cooldownUntil: timestamp("cooldownUntil"),
+  pumpOnSinceTimestamp: timestamp("pumpOnSinceTimestamp"),
+  pumpOnSecondsToday: int("pumpOnSecondsToday").default(0).notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type BessState = typeof bessState.$inferSelect;
 
 // ─── BESS Config (per site) ─────────────────────────────────
+// v1 fields (socLowLimit, socHighLimit, cooldownMinutes, lowReadingsRequired,
+// highReadingsRequired, presetName) preserved during MVP v2 transition; new
+// code reads only the v2 fields below. Cleanup planned post-MVP merge.
 export const bessConfig = mysqlTable("bess_config", {
   id: int("id").autoincrement().primaryKey(),
   siteId: int("siteId").notNull(),
@@ -136,10 +146,41 @@ export const bessConfig = mysqlTable("bess_config", {
   lowReadingsRequired: int("lowReadingsRequired").default(2).notNull(),
   highReadingsRequired: int("highReadingsRequired").default(3).notNull(),
   presetName: varchar("presetName", { length: 32 }).default("padrao").notNull(),
+  // ─── MVP v2 fields ───
+  socMinDesliga: int("socMinDesliga").default(25).notNull(),
+  socMinReliga: int("socMinReliga").default(30).notNull(),
+  socBlackout: int("socBlackout").default(15).notNull(),
+  horarioLiberacao: varchar("horarioLiberacao", { length: 5 }).default("06:00").notNull(),
+  horarioCorte: varchar("horarioCorte", { length: 5 }).default("17:30").notNull(),
+  margemZonaCritica: int("margemZonaCritica").default(5).notNull(),
+  intervaloPadrao: int("intervaloPadrao").default(15).notNull(),
+  intervaloCritico: int("intervaloCritico").default(2).notNull(),
+  cooldownAcao: int("cooldownAcao").default(5).notNull(),
+  maxSemTelemetria: int("maxSemTelemetria").default(30).notNull(),
+  controlMode: mysqlEnum("controlMode", ["AUTO", "MANUAL"]).default("AUTO").notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type BessConfig = typeof bessConfig.$inferSelect;
+
+// ─── BESS Actions (audit log of every control decision/manual action) ──
+export const bessActions = mysqlTable("bess_actions", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  timestamp: timestamp("timestamp").defaultNow().notNull(),
+  source: mysqlEnum("source", ["AUTO", "MANUAL", "BLACKOUT", "SYSTEM"]).notNull(),
+  action: mysqlEnum("action", ["TURN_ON", "TURN_OFF", "MODE_CHANGE", "CONFIG_CHANGE", "ALERT"]).notNull(),
+  socAtTime: int("socAtTime"),
+  socSource: mysqlEnum("socSource", ["REAL", "ESTIMATED"]).default("REAL"),
+  pumpStateBefore: mysqlEnum("pumpStateBefore", ["ON", "OFF", "UNKNOWN"]),
+  pumpStateAfter: mysqlEnum("pumpStateAfter", ["ON", "OFF", "UNKNOWN"]),
+  reason: varchar("reason", { length: 255 }),
+  userId: int("userId"),
+  metadata: json("metadata"),
+});
+
+export type BessAction = typeof bessActions.$inferSelect;
+export type InsertBessAction = typeof bessActions.$inferInsert;
 
 // ─── BESS Reports (periodic performance summaries) ──────────
 export const bessReports = mysqlTable("bess_reports", {

@@ -656,6 +656,20 @@ export async function seedMultiSiteData() {
   console.log("[BESS] Multi-site data seeded successfully.");
 }
 
+export async function seedDefaultConfigs() {
+  const db = await getDb();
+  if (!db) return;
+
+  const sites = await db.select().from(bessSites);
+  for (const site of sites) {
+    const existing = await db.select().from(bessConfig).where(eq(bessConfig.siteId, site.id)).limit(1);
+    if (existing.length === 0) {
+      await db.insert(bessConfig).values({ siteId: site.id });
+      console.log(`[Seed] bess_config default criada para site ${site.slug}`);
+    }
+  }
+}
+
 
 // ─── Settings ────────────────────────────────────────────────
 

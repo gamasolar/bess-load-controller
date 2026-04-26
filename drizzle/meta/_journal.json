@@ -71,6 +71,13 @@
       "when": 1777083627663,
       "tag": "0009_eager_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1777188238130,
+      "tag": "0010_mvp_v2_schema",
+      "breakpoints": true
     }
   ]
 }
