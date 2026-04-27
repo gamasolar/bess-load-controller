@@ -61,6 +61,14 @@ export function HistoryModal({
                 {a.pumpStateBefore && a.pumpStateAfter && (
                   <span className="text-xs text-muted-foreground">{a.pumpStateBefore}→{a.pumpStateAfter}</span>
                 )}
+                {(a.userName || a.userEmail) && (
+                  <span className="text-[11px] font-mono text-blue-300/80 bg-blue-500/10 border border-blue-500/20 rounded px-1.5">
+                    👤 {a.userName ?? a.userEmail}
+                  </span>
+                )}
+                {a.source === "AUTO" && !a.userId && (
+                  <span className="text-[10px] font-mono text-zinc-500">🤖 sistema</span>
+                )}
                 {a.reason && (
                   <p className="w-full text-xs text-muted-foreground mt-1">{a.reason}</p>
                 )}

@@ -275,3 +275,10 @@ input[type="range"]::-moz-range-thumb {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* Pump drop animation (water drops falling from pump icon when ON) */
+@keyframes pumpDrop {
+  0% { transform: translate(-50%, 0); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translate(-50%, 18px); opacity: 0; }
+}

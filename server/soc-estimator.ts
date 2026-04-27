@@ -75,7 +75,14 @@ export async function calculateDischargeRate(siteId: number): Promise<number | n
  * Retorna null se nunca houve leitura real (lastTelemetryAt is null) ou
  * se não há rate calculável (< MIN_VALID_READINGS no histórico).
  */
-const STALE_THRESHOLD_MS = 60_000; // 1 min — abaixo disso, considera REAL
+// Threshold pra considerar a leitura "fresca o bastante pra usar como REAL"
+// na UI. 30 min cobre todos os intervalos de polling (padrão 15, crítico 2,
+// noturno 60 — esse último excede mas é OK porque madrugada com bomba OFF
+// tem variação muito pequena).
+const STALE_THRESHOLD_MS = 30 * 60_000;
+// Acima disso, mesmo o estimador é descartado — leitura velha demais pra
+// confiar em qualquer estimativa.
+const ABANDON_THRESHOLD_MS = 6 * 60 * 60_000; // 6h
 
 export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | null> {
   const db = await getDb();
@@ -94,7 +101,10 @@ export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | 
   const ageMs = now - state.lastTelemetryAt.getTime();
   const ageSeconds = Math.floor(ageMs / 1000);
 
-  // Dados frescos — devolve o real
+  // Leitura velha demais — não há SOC confiável.
+  if (ageMs > ABANDON_THRESHOLD_MS) return null;
+
+  // Leitura recente — devolve o real direto.
   if (ageMs < STALE_THRESHOLD_MS) {
     return {
       soc: state.currentSoc,
@@ -104,17 +114,27 @@ export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | 
     };
   }
 
+  // Tenta estimar via Coulomb counting com base nas leituras anteriores.
   const rate = await calculateDischargeRate(siteId);
-  if (rate === null) return null;
+  if (rate !== null) {
+    const minutesElapsed = ageMs / 60_000;
+    const projected = state.currentSoc + rate * minutesElapsed;
+    return {
+      soc: Math.max(0, Math.min(100, projected)),
+      source: "ESTIMATED",
+      ageSeconds,
+      ratePpPerMin: rate,
+    };
+  }
 
-  const minutesElapsed = ageMs / 60_000;
-  const projected = state.currentSoc + rate * minutesElapsed;
-  const clamped = Math.max(0, Math.min(100, projected));
-
+  // Fallback: estimador falhou (histórico insuficiente), mas a leitura ainda
+  // está dentro do range aceitável (≤ 6h) — devolve o último valor conhecido
+  // marcado como ESTIMATED. Importante: control-engine recusa religar com
+  // socSource ≠ REAL, então a bomba não vai religar baseada num dado velho.
   return {
-    soc: clamped,
+    soc: state.currentSoc,
     source: "ESTIMATED",
     ageSeconds,
-    ratePpPerMin: rate,
+    ratePpPerMin: null,
   };
 }

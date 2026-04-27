@@ -1,12 +1,14 @@
 import { eq, desc, and, gte, lte, sql, count, avg, min, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
-  InsertUser, users,
+  InsertUser, users, userInvitations,
   bessSites, bessReadings, bessEvents, bessAlarms, bessState, bessConfig,
+  bessActions,
   bessReports,
   bessSettings,
   type BessSite, type BessState, type BessConfig, type BessReading,
-  type BessReport, type InsertBessReport, type BessSetting
+  type BessReport, type InsertBessReport, type BessSetting,
+  type User, type UserInvitation, type InsertUserInvitation,
 } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -62,6 +64,21 @@ export async function getAllSites() {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(bessSites).where(eq(bessSites.isActive, true));
+}
+
+export async function listAllSitesIncludingInactive() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(bessSites);
+}
+
+export async function updateSiteById(
+  id: number,
+  patch: Partial<typeof bessSites.$inferInsert>,
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(bessSites).set(patch).where(eq(bessSites.id, id));
 }
 
 export async function getSiteBySlug(slug: string) {
@@ -184,6 +201,32 @@ export async function addAlarm(siteId: number, severity: "CRITICAL" | "WARNING" 
   await db.insert(bessAlarms).values({ siteId, severity, type, description, active: true });
 }
 
+/** Open an alarm of the given type only if there isn't an active one for this site+type already. */
+export async function openAlarmIfMissing(siteId: number, severity: "CRITICAL" | "WARNING" | "INFO", type: string, description: string) {
+  const db = await getDb();
+  if (!db) return;
+  const existing = await db.select().from(bessAlarms)
+    .where(and(eq(bessAlarms.siteId, siteId), eq(bessAlarms.type, type), eq(bessAlarms.active, true)))
+    .limit(1);
+  if (existing.length > 0) return;
+  await db.insert(bessAlarms).values({ siteId, severity, type, description, active: true });
+}
+
+/** Close all active alarms of a given type (optionally for a specific site). */
+export async function closeAlarmsByType(type: string, siteId?: number) {
+  const db = await getDb();
+  if (!db) return;
+  if (siteId !== undefined) {
+    await db.update(bessAlarms)
+      .set({ active: false, closedAt: new Date() })
+      .where(and(eq(bessAlarms.siteId, siteId), eq(bessAlarms.type, type), eq(bessAlarms.active, true)));
+  } else {
+    await db.update(bessAlarms)
+      .set({ active: false, closedAt: new Date() })
+      .where(and(eq(bessAlarms.type, type), eq(bessAlarms.active, true)));
+  }
+}
+
 // ─── BESS Config (per site) ─────────────────────────────────
 export async function getBessConfig(siteId: number) {
   const db = await getDb();
@@ -192,10 +235,36 @@ export async function getBessConfig(siteId: number) {
   return rows[0] ?? null;
 }
 
+/**
+ * Histerese mínima entre socMinReliga e socMinDesliga em pontos percentuais.
+ * Abaixo disso, a bomba pode entrar em ping-pong (liga → desliga → liga
+ * em segundos) com qualquer flutuação de SOC. Defesa em profundidade
+ * caso futuro endpoint/script tente gravar config sem validar.
+ */
+const MIN_HYSTERESIS_PP = 3;
+
 export async function upsertBessConfig(siteId: number, data: Partial<typeof bessConfig.$inferInsert>) {
   const db = await getDb();
   if (!db) return;
   const existing = await getBessConfig(siteId);
+
+  // Defesa: garante histerese mín entre desliga e religa.
+  // Computa o estado FINAL pós-merge antes de validar (campos não passados
+  // no `data` herdam do existente).
+  const finalDesliga = data.socMinDesliga ?? existing?.socMinDesliga;
+  const finalReliga = data.socMinReliga ?? existing?.socMinReliga;
+  if (
+    finalDesliga !== undefined && finalReliga !== undefined &&
+    finalReliga - finalDesliga < MIN_HYSTERESIS_PP
+  ) {
+    const corrected = finalDesliga + MIN_HYSTERESIS_PP;
+    console.warn(
+      `[Config] Histerese inválida no site ${siteId}: socMinReliga(${finalReliga}) - socMinDesliga(${finalDesliga}) < ${MIN_HYSTERESIS_PP}pp. ` +
+      `Forçando socMinReliga=${corrected} pra evitar ping-pong da bomba.`,
+    );
+    data = { ...data, socMinReliga: corrected };
+  }
+
   if (!existing) {
     await db.insert(bessConfig).values({ siteId, ...data } as any);
   } else {
@@ -695,4 +764,115 @@ export async function getAllSettings(): Promise<BessSetting[]> {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(bessSettings).orderBy(bessSettings.key);
+}
+
+// ─── Users management ────────────────────────────────────────
+export async function listUsers(): Promise<User[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(users).orderBy(desc(users.createdAt));
+}
+
+export async function getUserById(id: number): Promise<User | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function updateUserMeta(id: number, patch: { name?: string | null; email?: string | null; role?: "user" | "admin"; disabled?: boolean }): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const set: Record<string, unknown> = {};
+  if (patch.name !== undefined) set.name = patch.name;
+  if (patch.email !== undefined) set.email = patch.email;
+  if (patch.role !== undefined) set.role = patch.role;
+  if (patch.disabled !== undefined) set.disabled = patch.disabled;
+  if (Object.keys(set).length === 0) return;
+  await db.update(users).set(set).where(eq(users.id, id));
+}
+
+export async function setUserPasswordHash(id: number, passwordHash: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ passwordHash }).where(eq(users.id, id));
+}
+
+// ─── Invitations ─────────────────────────────────────────────
+export async function createInvitation(values: InsertUserInvitation): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(userInvitations).values(values);
+}
+
+export async function listInvitations(): Promise<UserInvitation[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(userInvitations).orderBy(desc(userInvitations.createdAt));
+}
+
+export async function getInvitationByToken(token: string): Promise<UserInvitation | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(userInvitations).where(eq(userInvitations.token, token)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function markInvitationUsed(token: string, userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(userInvitations).set({ usedAt: new Date(), usedByUserId: userId }).where(eq(userInvitations.token, token));
+}
+
+export async function revokeInvitation(token: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  // Marca como usado por userId=0 (sentinela "revogado") pra invalidar sem apagar histórico.
+  await db.update(userInvitations).set({ usedAt: new Date(), usedByUserId: 0 }).where(eq(userInvitations.token, token));
+}
+
+// ─── Alarms maintenance ──────────────────────────────────────
+export async function deleteResolvedAlarmsOlderThan(days: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const result = await db.delete(bessAlarms).where(
+    and(eq(bessAlarms.active, false), lte(bessAlarms.openedAt, cutoff)),
+  );
+  // drizzle-orm/mysql2 retorna { rowsAffected } no driver; aproximar:
+  return (result as unknown as { rowsAffected?: number }).rowsAffected ?? 0;
+}
+
+// ─── Bess Actions (audit log v2) ────────────────────────────
+export async function recordAction(input: {
+  siteId: number;
+  source: "AUTO" | "MANUAL" | "BLACKOUT" | "SYSTEM";
+  action: "TURN_ON" | "TURN_OFF" | "MODE_CHANGE" | "CONFIG_CHANGE" | "ALERT";
+  socAtTime?: number | null;
+  socSource?: "REAL" | "ESTIMATED";
+  pumpStateBefore?: "ON" | "OFF" | "UNKNOWN" | null;
+  pumpStateAfter?: "ON" | "OFF" | "UNKNOWN" | null;
+  reason: string;
+  userId?: number | null;
+  metadata?: Record<string, unknown> | null;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.insert(bessActions).values({
+      siteId: input.siteId,
+      source: input.source,
+      action: input.action,
+      socAtTime: input.socAtTime !== undefined && input.socAtTime !== null
+        ? Math.round(input.socAtTime) : null,
+      socSource: input.socSource ?? "REAL",
+      pumpStateBefore: input.pumpStateBefore ?? null,
+      pumpStateAfter: input.pumpStateAfter ?? null,
+      reason: input.reason.slice(0, 255),
+      userId: input.userId ?? null,
+      metadata: input.metadata ?? null,
+    });
+  } catch (e) {
+    console.warn("[recordAction] failed:", e);
+  }
 }

@@ -1,9 +1,11 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
-import { publicProcedure, router } from "./_core/trpc";
+import { publicProcedure, adminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
-import { bessActions, bessConfig as bessConfigTable } from "../drizzle/schema";
+import { eq, desc, and, gte, lt, inArray, asc } from "drizzle-orm";
+import { bessActions, bessConfig as bessConfigTable, bessState } from "../drizzle/schema";
+import { usersRouter, invitationsRouter, sitesRouter, whatsappRouter, systemAdminEndpoints } from "./admin-routes";
+import { triggerSitePoll } from "./poll-scheduler";
 import {
   getDb,
   getAllSites,
@@ -18,6 +20,9 @@ import {
   getAllRecentEvents,
   getActiveAlarms,
   addAlarm,
+  openAlarmIfMissing,
+  closeAlarmsByType,
+  recordAction,
   getBessConfig,
   upsertBessConfig,
   upsertSite,
@@ -311,11 +316,22 @@ export async function evaluateLoadControl(siteId: number): Promise<{ action: str
       lastDecision = `[AUTO] SOC em ${currentSoc}% — CARGA DESLIGADA automaticamente (${lowRequired} leituras <= ${socLow}%).`;
       actionTaken = "LOAD_OFF";
       await addEvent(siteId, "LOAD_OFF", lastDecision);
+      const pumpBefore = (state?.sonoffPower ?? "ON") as "ON" | "OFF" | "UNKNOWN";
       // Send MQTT command to Sonoff
+      let mqttOk = true;
       if (site.mqttTopic) {
         const mqttResult = await sendMqttCommand(siteId, site.mqttTopic, "OFF", `autoEval:${site.slug}`);
         lastDecision += ` MQTT: ${mqttResult.message}`;
+        mqttOk = mqttResult.success;
       }
+      await recordAction({
+        siteId, source: "AUTO", action: "TURN_OFF",
+        socAtTime: currentSoc, socSource: "REAL",
+        pumpStateBefore: pumpBefore,
+        pumpStateAfter: mqttOk ? "OFF" : pumpBefore,
+        reason: lastDecision,
+        metadata: { socLow, lowRequired, loop: "v1" },
+      });
       // Notify owner
       notifyCriticalAlarm(site.name, `CARGA DESLIGADA automaticamente.\n\nSOC: ${currentSoc}%\nLimite: ${socLow}%\nLeituras consecutivas: ${lowRequired}\n\nA carga será religada quando o SOC atingir ${socHigh}%.`);
     } else {
@@ -332,11 +348,22 @@ export async function evaluateLoadControl(siteId: number): Promise<{ action: str
       lastDecision = `[AUTO] SOC em ${currentSoc}% — CARGA RELIGADA automaticamente (${highRequired} leituras >= ${socHigh}%).`;
       actionTaken = "LOAD_ON";
       await addEvent(siteId, "LOAD_ON", lastDecision);
+      const pumpBefore = (state?.sonoffPower ?? "OFF") as "ON" | "OFF" | "UNKNOWN";
       // Send MQTT command to Sonoff
+      let mqttOk = true;
       if (site.mqttTopic) {
         const mqttResult = await sendMqttCommand(siteId, site.mqttTopic, "ON", `autoEval:${site.slug}`);
         lastDecision += ` MQTT: ${mqttResult.message}`;
+        mqttOk = mqttResult.success;
       }
+      await recordAction({
+        siteId, source: "AUTO", action: "TURN_ON",
+        socAtTime: currentSoc, socSource: "REAL",
+        pumpStateBefore: pumpBefore,
+        pumpStateAfter: mqttOk ? "ON" : pumpBefore,
+        reason: lastDecision,
+        metadata: { socHigh, highRequired, loop: "v1" },
+      });
     } else if (highCounter >= highRequired && loadStatus === "on") {
       highCounter = highRequired;
       healthStatus = "healthy";
@@ -365,6 +392,11 @@ let autoFetchInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startAutoFetch() {
   if (autoFetchInterval) return;
+  // Defesa: nunca rodar em paralelo com o adaptive polling do v2.
+  if (process.env.USE_MVP_V2_CONTROL === "true") {
+    console.warn("[AutoFetch] Ignorado — USE_MVP_V2_CONTROL=true (v2 adaptive polling ativo).");
+    return;
+  }
   console.log("[AutoFetch] Iniciando polling FusionSolar a cada 6 minutos + avaliação automática de carga...");
 
   const doFetch = async () => {
@@ -413,6 +445,10 @@ export function startAutoFetch() {
  * sets up a callback to sync real Sonoff state to the database,
  * and starts polling every 30 seconds.
  */
+// Counter de polls MQTT consecutivos onde estado convergiu — evita flutter
+// de alarmes DIVERGENCE em race conditions (ver lógica em onStateChange abaixo).
+const _convergenceStreak: Map<number, number> = new Map();
+
 export async function startMqttStateSync() {
   if (!isMqttConfigured()) {
     console.log("[MqttSync] MQTT não configurado — sync desativado.");
@@ -465,18 +501,36 @@ export async function startMqttStateSync() {
           console.log(`[MqttSync] ${site.slug}: Sonoff online = ${realState.online}`);
         }
 
-        // Detect divergence: system says ON but Sonoff is OFF (or vice versa)
-        const expectedLoad = state?.loadStatus ?? "off";
+        // Detect divergence: system says ON but Sonoff is OFF (or vice versa).
+        // Estratégias pra evitar flutter:
+        //   1. Re-leitura FRESCA (cache stale do bess_state vence em microssegundos).
+        //   2. Suprime detecção durante cooldown (janela natural de dessincronia).
+        //   3. Fecha alarme só após N polls convergentes consecutivos (60s) — evita
+        //      alarme piscar em race conditions.
         const realPower = realState.power;
         if (realPower !== "UNKNOWN" && realState.online) {
+          const fresh = await getBessState(site.id);
+          const expectedLoad = fresh?.loadStatus ?? "off";
+          const inCooldown = fresh?.cooldownUntil
+            ? new Date(fresh.cooldownUntil).getTime() > Date.now()
+            : false;
           const isDivergent = (expectedLoad === "on" && realPower === "OFF") ||
                               (expectedLoad === "off" && realPower === "ON");
-          if (isDivergent) {
+
+          if (isDivergent && !inCooldown) {
+            _convergenceStreak.set(site.id, 0);
             console.warn(`[MqttSync] DIVERGÊNCIA ${site.slug}: sistema=${expectedLoad} sonoff=${realPower}`);
             await addEvent(site.id, "DIVERGENCE",
               `Estado divergente: sistema diz carga ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
-            await addAlarm(site.id, "WARNING", "DIVERGENCE",
+            await openAlarmIfMissing(site.id, "WARNING", "DIVERGENCE",
               `Divergência: carga deveria estar ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
+          } else if (!isDivergent) {
+            const streak = (_convergenceStreak.get(site.id) ?? 0) + 1;
+            _convergenceStreak.set(site.id, streak);
+            // Polling MQTT a cada 30s → 2 polls = 60s de convergência sustentada
+            if (streak >= 2) {
+              await closeAlarmsByType("DIVERGENCE", site.id);
+            }
           }
         }
       } catch (e) {
@@ -506,7 +560,13 @@ export const appRouter = router({
     health: publicProcedure
       .input(z.object({ timestamp: z.number().min(0).optional() }).optional())
       .query(() => ({ ok: true })),
+    info: systemAdminEndpoints.info,
+    clearResolvedAlarms: systemAdminEndpoints.clearResolvedAlarms,
   }),
+  users: usersRouter,
+  invitations: invitationsRouter,
+  sites: sitesRouter,
+  whatsapp: whatsappRouter,
   auth: router({
     me: publicProcedure.query(opts => { if (!opts.ctx.user) return null; const { passwordHash, ...safe } = opts.ctx.user; return safe; }),
     logout: publicProcedure.mutation(({ ctx }) => {
@@ -541,6 +601,7 @@ export const appRouter = router({
           fusionsolarPlantCode: site.fusionsolarPlantCode ?? "",
           fusionsolarDeviceIds: site.fusionsolarDeviceIds ?? "",
           fusionsolarInverterIds: site.fusionsolarInverterIds ?? "",
+          backgroundUrl: site.backgroundUrl ?? null,
           mqttTopic: site.mqttTopic ?? "",
           // State summary
           currentSoc: state?.currentSoc ?? 0,
@@ -641,6 +702,7 @@ export const appRouter = router({
             name: runtime.site.name,
             mqttTopic: runtime.site.mqttTopic,
             fusionsolarConfigured: !!(runtime.site.fusionsolarDeviceIds && runtime.site.fusionsolarPlantCode),
+            backgroundUrl: runtime.site.backgroundUrl ?? null,
           },
           config: {
             socMinDesliga: runtime.config.socMinDesliga,
@@ -651,6 +713,8 @@ export const appRouter = router({
             margemZonaCritica: runtime.config.margemZonaCritica,
             intervaloPadrao: runtime.config.intervaloPadrao,
             intervaloCritico: runtime.config.intervaloCritico,
+            intervaloNoturno: runtime.config.intervaloNoturno,
+            intervaloBombaSemSolar: runtime.config.intervaloBombaSemSolar,
             cooldownAcao: runtime.config.cooldownAcao,
             maxSemTelemetria: runtime.config.maxSemTelemetria,
             controlMode: runtime.config.controlMode,
@@ -683,9 +747,9 @@ export const appRouter = router({
       }),
 
     // ── Manual command: on/off for a site ──
-    command: publicProcedure
+    command: adminProcedure
       .input(z.object({ slug: z.string(), action: z.enum(["on", "off"]) }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         await ensureSeeded();
         const site = await getSiteBySlug(input.slug);
         if (!site) return { success: false, message: "Site não encontrado.", loadStatus: "off" as const };
@@ -739,6 +803,22 @@ export const appRouter = router({
             mqttManualResult
               ? `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} via MQTT (modo manual) — ${mqttManualResult.message}`
               : `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} — registro manual (sem atuação remota)`);
+          await recordAction({
+            siteId: site.id, source: "MANUAL",
+            action: input.action === "on" ? "TURN_ON" : "TURN_OFF",
+            socAtTime: state?.currentSoc ?? null, socSource: "REAL",
+            pumpStateBefore: (state?.sonoffPower ?? null) as "ON" | "OFF" | "UNKNOWN" | null,
+            pumpStateAfter: (mqttManualResult?.success ?? true)
+              ? (input.action === "on" ? "ON" : "OFF")
+              : (state?.sonoffPower ?? null) as "ON" | "OFF" | "UNKNOWN" | null,
+            reason: `Comando manual (modo MANUAL)${mqttManualResult ? ` — ${mqttManualResult.message}` : " — sem MQTT"}`,
+            userId: ctx.user?.id ?? null,
+            metadata: {
+              mode: "manual", mqttSent: !!mqttManualResult,
+              userName: ctx.user?.name ?? null,
+              userEmail: ctx.user?.email ?? null,
+            },
+          });
           return {
             success: mqttManualResult ? mqttManualResult.success : true,
             wasDuplicate: false,
@@ -770,6 +850,22 @@ export const appRouter = router({
           mqttResult
             ? `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} via MQTT — ${mqttResult.message}`
             : `Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} manualmente pelo operador`);
+        await recordAction({
+          siteId: site.id, source: "MANUAL",
+          action: input.action === "on" ? "TURN_ON" : "TURN_OFF",
+          socAtTime: state?.currentSoc ?? null, socSource: "REAL",
+          pumpStateBefore: (state?.sonoffPower ?? null) as "ON" | "OFF" | "UNKNOWN" | null,
+          pumpStateAfter: (mqttResult?.success ?? true)
+            ? (input.action === "on" ? "ON" : "OFF")
+            : (state?.sonoffPower ?? null) as "ON" | "OFF" | "UNKNOWN" | null,
+          reason: `Comando manual${mqttResult ? ` — ${mqttResult.message}` : " (sem MQTT)"}`,
+          userId: ctx.user?.id ?? null,
+          metadata: {
+            mode: "auto_mqtt", mqttSent: !!mqttResult,
+            userName: ctx.user?.name ?? null,
+            userEmail: ctx.user?.email ?? null,
+          },
+        });
 
         const cmdSuccess = mqttResult ? mqttResult.success : true;
         return {
@@ -782,7 +878,7 @@ export const appRouter = router({
       }),
 
     // ── Toggle mode for a site ──
-    toggleMode: publicProcedure
+    toggleMode: adminProcedure
       .input(z.object({ slug: z.string() }))
       .mutation(async ({ input }) => {
         await ensureSeeded();
@@ -871,7 +967,7 @@ export const appRouter = router({
       }),
 
     // ── Update config for a site ──
-    updateConfig: publicProcedure
+    updateConfig: adminProcedure
       .input(z.object({
         slug: z.string(),
         socLowLimit: z.number().min(5).max(50),
@@ -895,7 +991,164 @@ export const appRouter = router({
         return { success: true, message: `Configuração salva com sucesso. Preset: ${input.presetName}.` };
       }),
 
+    // ── Weather (Open-Meteo, cache 10min) ──
+    weather: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => {
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return null;
+        if (site.lat == null || site.lng == null) return { configured: false as const };
+        const { getWeatherFor } = await import("./weather");
+        const data = await getWeatherFor(site.lat, site.lng);
+        if (!data) return { configured: true as const, available: false as const };
+        return { configured: true as const, available: true as const, ...data };
+      }),
+
     // ─── MVP v2 endpoints ───
+
+    // ── Pump operation stats (hours ON, kWh estimated, cycles) ──
+    // Aggregates bess_actions TURN_ON/TURN_OFF pairs into time buckets.
+    // For "today" buckets, augments with bess_state.pumpOnSecondsToday so the
+    // current open interval (bomba ainda ligada) é contabilizado em tempo real.
+    pumpStats: publicProcedure
+      .input(z.object({
+        slug: z.string(),
+        range: z.enum(["day", "week", "month", "year"]).default("week"),
+      }))
+      .query(async ({ input }) => {
+        await ensureSeeded();
+        const site = await getSiteBySlug(input.slug);
+        if (!site) return { buckets: [], totalHoursOn: 0, totalKwh: 0, totalCycles: 0 };
+        const db = await getDb();
+        if (!db) return { buckets: [], totalHoursOn: 0, totalKwh: 0, totalCycles: 0 };
+
+        // CV → kW (1 CV ≈ 0.7355 kW). pumpPowerCv é potência por bomba; * pumpCount.
+        const totalKwPump = (site.pumpPowerCv ?? 0) * (site.pumpCount ?? 0) * 0.7355;
+
+        // Janela de busca + bucket size
+        const now = new Date();
+        let from: Date;
+        let bucketKind: "hour" | "day" | "month";
+        let bucketCount: number;
+        if (input.range === "day") {
+          from = new Date(now); from.setHours(0, 0, 0, 0);
+          bucketKind = "hour"; bucketCount = 24;
+        } else if (input.range === "week") {
+          from = new Date(now); from.setDate(from.getDate() - 6); from.setHours(0, 0, 0, 0);
+          bucketKind = "day"; bucketCount = 7;
+        } else if (input.range === "month") {
+          from = new Date(now); from.setDate(from.getDate() - 29); from.setHours(0, 0, 0, 0);
+          bucketKind = "day"; bucketCount = 30;
+        } else {
+          from = new Date(now); from.setMonth(from.getMonth() - 11); from.setDate(1); from.setHours(0, 0, 0, 0);
+          bucketKind = "month"; bucketCount = 12;
+        }
+
+        // Última ação ANTES do range pra saber se entrou ligado
+        const priorRows = await db
+          .select({ action: bessActions.action })
+          .from(bessActions)
+          .where(and(
+            eq(bessActions.siteId, site.id),
+            inArray(bessActions.action, ["TURN_ON", "TURN_OFF"]),
+            lt(bessActions.timestamp, from),
+          ))
+          .orderBy(desc(bessActions.timestamp))
+          .limit(1);
+
+        // Sem fallback otimista: se não há TURN_ON/OFF registrados, gráfico fica vazio.
+        // Inferir "estava ON antes" gera dados imprecisos (não sabemos quando ligou).
+        // O v1 antigo (até 15:11 BRT 2026-04-26) não escreveu TURN_ON/OFF — esse hiato
+        // é mostrado como zero. A partir do v2 a contagem fica precisa ao segundo.
+
+        // Ações dentro do range, ascendente
+        const rows = await db
+          .select({ timestamp: bessActions.timestamp, action: bessActions.action })
+          .from(bessActions)
+          .where(and(
+            eq(bessActions.siteId, site.id),
+            inArray(bessActions.action, ["TURN_ON", "TURN_OFF"]),
+            gte(bessActions.timestamp, from),
+          ))
+          .orderBy(asc(bessActions.timestamp));
+
+        // Reconstrói intervalos ON [start, end). Ainda ligada → end = now.
+        const intervals: { start: Date; end: Date }[] = [];
+
+        // Estado em `from` deduzido SOMENTE de eventos registrados:
+        // só consideramos ON se houver um TURN_ON anterior (ou TURN_ON dentro do range).
+        // Se a única evidência é um TURN_OFF dentro do range, NÃO inferimos — não
+        // sabemos quando ligou (pode ter sido às 06h, 12h, etc.).
+        let pendingStart: Date | null = priorRows[0]?.action === "TURN_ON" ? from : null;
+        for (const a of rows) {
+          const ts = a.timestamp instanceof Date ? a.timestamp : new Date(a.timestamp as unknown as string);
+          if (a.action === "TURN_ON") {
+            if (!pendingStart) pendingStart = ts;
+          } else if (a.action === "TURN_OFF") {
+            if (pendingStart) {
+              intervals.push({ start: pendingStart, end: ts });
+              pendingStart = null;
+            }
+          }
+        }
+        if (pendingStart) intervals.push({ start: pendingStart, end: now });
+
+        // Aloca buckets
+        type Bucket = { label: string; ts: number; secondsOn: number; cycles: number };
+        const buckets: Bucket[] = [];
+        for (let i = 0; i < bucketCount; i++) {
+          const d = new Date(from);
+          if (bucketKind === "hour") d.setHours(d.getHours() + i);
+          else if (bucketKind === "day") d.setDate(d.getDate() + i);
+          else d.setMonth(d.getMonth() + i);
+          const label =
+            bucketKind === "hour" ? `${String(d.getHours()).padStart(2, "0")}h`
+            : bucketKind === "day" ? `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`
+            : d.toLocaleDateString("pt-BR", { month: "short" });
+          buckets.push({ label, ts: d.getTime(), secondsOn: 0, cycles: 0 });
+        }
+
+        // Distribui intervalos pelos buckets
+        function bucketIndexFor(t: number): number {
+          for (let i = buckets.length - 1; i >= 0; i--) {
+            if (t >= buckets[i].ts) return i;
+          }
+          return -1;
+        }
+        function bucketEnd(i: number): number {
+          return i + 1 < buckets.length ? buckets[i + 1].ts : now.getTime() + 1;
+        }
+        for (const iv of intervals) {
+          const startMs = iv.start.getTime();
+          const endMs = iv.end.getTime();
+          const startIdx = Math.max(0, bucketIndexFor(startMs));
+          const endIdx = Math.max(0, bucketIndexFor(endMs - 1));
+          for (let i = startIdx; i <= endIdx; i++) {
+            const segStart = Math.max(startMs, buckets[i].ts);
+            const segEnd = Math.min(endMs, bucketEnd(i));
+            if (segEnd > segStart) {
+              buckets[i].secondsOn += (segEnd - segStart) / 1000;
+            }
+          }
+          // Conta o ciclo no bucket onde começou
+          if (startIdx >= 0 && startIdx < buckets.length) {
+            buckets[startIdx].cycles += 1;
+          }
+        }
+
+        const result = buckets.map((b) => ({
+          label: b.label,
+          hoursOn: +(b.secondsOn / 3600).toFixed(2),
+          kwhEstimado: +((b.secondsOn / 3600) * totalKwPump).toFixed(2),
+          cycles: b.cycles,
+        }));
+
+        const totalHoursOn = +result.reduce((s, b) => s + b.hoursOn, 0).toFixed(2);
+        const totalKwh = +result.reduce((s, b) => s + b.kwhEstimado, 0).toFixed(2);
+        const totalCycles = result.reduce((s, b) => s + b.cycles, 0);
+
+        return { buckets: result, totalHoursOn, totalKwh, totalCycles, pumpKw: +totalKwPump.toFixed(2) };
+      }),
 
     // List actions log (audit) for a site
     getActions: publicProcedure
@@ -906,9 +1159,28 @@ export const appRouter = router({
         if (!site) return [];
         const db = await getDb();
         if (!db) return [];
+        // LEFT JOIN com users pra trazer nome/email de quem fez cada ação manual.
+        // Importação dinâmica evita ciclo com schema (já está na escopo do file).
+        const { users } = await import("../drizzle/schema");
         const rows = await db
-          .select()
+          .select({
+            id: bessActions.id,
+            siteId: bessActions.siteId,
+            timestamp: bessActions.timestamp,
+            source: bessActions.source,
+            action: bessActions.action,
+            socAtTime: bessActions.socAtTime,
+            socSource: bessActions.socSource,
+            pumpStateBefore: bessActions.pumpStateBefore,
+            pumpStateAfter: bessActions.pumpStateAfter,
+            reason: bessActions.reason,
+            userId: bessActions.userId,
+            metadata: bessActions.metadata,
+            userName: users.name,
+            userEmail: users.email,
+          })
           .from(bessActions)
+          .leftJoin(users, eq(bessActions.userId, users.id))
           .where(eq(bessActions.siteId, site.id))
           .orderBy(desc(bessActions.timestamp))
           .limit(input.limit);
@@ -916,7 +1188,7 @@ export const appRouter = router({
       }),
 
     // Update v2 config fields (additive — v1 fields untouched)
-    updateConfigV2: publicProcedure
+    updateConfigV2: adminProcedure
       .input(z.object({
         slug: z.string(),
         socMinDesliga: z.number().int().min(5).max(60).optional(),
@@ -927,6 +1199,8 @@ export const appRouter = router({
         margemZonaCritica: z.number().int().min(0).max(20).optional(),
         intervaloPadrao: z.number().int().min(2).max(60).optional(),
         intervaloCritico: z.number().int().min(1).max(15).optional(),
+        intervaloNoturno: z.number().int().min(15).max(240).optional(),
+        intervaloBombaSemSolar: z.number().int().min(1).max(30).optional(),
         cooldownAcao: z.number().int().min(1).max(30).optional(),
         maxSemTelemetria: z.number().int().min(5).max(120).optional(),
       }))
@@ -951,6 +1225,8 @@ export const appRouter = router({
           margemZonaCritica: input.margemZonaCritica ?? current.margemZonaCritica,
           intervaloPadrao: input.intervaloPadrao ?? current.intervaloPadrao,
           intervaloCritico: input.intervaloCritico ?? current.intervaloCritico,
+          intervaloNoturno: input.intervaloNoturno ?? current.intervaloNoturno,
+          intervaloBombaSemSolar: input.intervaloBombaSemSolar ?? current.intervaloBombaSemSolar,
           cooldownAcao: input.cooldownAcao ?? current.cooldownAcao,
           maxSemTelemetria: input.maxSemTelemetria ?? current.maxSemTelemetria,
         };
@@ -971,16 +1247,19 @@ export const appRouter = router({
           siteId: site.id,
           source: "MANUAL",
           action: "CONFIG_CHANGE",
-          reason: "updateConfigV2",
+          reason: `Configuração alterada${ctx.user ? ` por ${ctx.user.name ?? ctx.user.email ?? "admin"}` : ""}`,
           userId: ctx.user?.id ?? null,
-          metadata: next,
+          metadata: { ...next, userName: ctx.user?.name ?? null, userEmail: ctx.user?.email ?? null },
         });
+
+        // Força reagendamento com a config nova — não espera o timer atual
+        triggerSitePoll(input.slug);
 
         return { success: true, message: "Configuração v2 atualizada." };
       }),
 
     // Toggle controlMode AUTO ↔ MANUAL no bess_config
-    setControlMode: publicProcedure
+    setControlMode: adminProcedure
       .input(z.object({ slug: z.string(), mode: z.enum(["AUTO", "MANUAL"]) }))
       .mutation(async ({ input, ctx }) => {
         await ensureSeeded();
@@ -996,9 +1275,13 @@ export const appRouter = router({
           siteId: site.id,
           source: "MANUAL",
           action: "MODE_CHANGE",
-          reason: `controlMode → ${input.mode}`,
+          reason: `controlMode → ${input.mode}${ctx.user ? ` (por ${ctx.user.name ?? ctx.user.email ?? "admin"})` : ""}`,
           userId: ctx.user?.id ?? null,
+          metadata: { mode: input.mode, userName: ctx.user?.name ?? null, userEmail: ctx.user?.email ?? null },
         });
+
+        // Mudou pra AUTO ou MANUAL — força reavaliação imediata
+        triggerSitePoll(input.slug);
 
         return { success: true, message: `Modo de controle: ${input.mode}` };
       }),

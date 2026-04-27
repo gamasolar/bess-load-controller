@@ -196,6 +196,47 @@ describe("decideAction", () => {
       expect(decideAction(s, NOON).kind).toBe("NONE");
     });
   });
+
+  describe("Bordas e combinações extras", () => {
+    it("blackout exato (SOC = socBlackout) ainda desliga", () => {
+      const s = makeState({ soc: 15, pumpState: "ON" });
+      expect(decideAction(s, NOON).kind).toBe("TURN_OFF");
+    });
+
+    it("pumpState UNKNOWN não dispara ação automática", () => {
+      const s = makeState({ soc: 50, pumpState: "UNKNOWN" });
+      expect(decideAction(s, NOON).kind).toBe("NONE");
+    });
+
+    it("religa exatamente em 06:00 (borda inicial inclusiva)", () => {
+      const s = makeState({ soc: 50, pumpState: "OFF" });
+      expect(decideAction(s, new Date("2026-01-01T06:00:00")).kind).toBe("TURN_ON");
+    });
+
+    it("religa às 17:29 mas não às 17:30", () => {
+      const s = makeState({ soc: 50, pumpState: "OFF" });
+      expect(decideAction(s, new Date("2026-01-01T17:29:00")).kind).toBe("TURN_ON");
+      expect(decideAction(s, new Date("2026-01-01T17:30:00")).kind).toBe("NONE");
+    });
+
+    it("cooldown ativo bloqueia religa mesmo com SOC alto e dentro do horário", () => {
+      const s = makeState({
+        soc: 80, pumpState: "OFF",
+        cooldownUntil: new Date(NOON.getTime() + 60_000),
+      });
+      const d = decideAction(s, NOON);
+      expect(d.kind).toBe("NONE");
+      expect(d.reason).toMatch(/[Cc]ooldown/);
+    });
+
+    it("blackout supera MANUAL + cooldown simultaneamente", () => {
+      const s = makeState({
+        soc: 10, pumpState: "ON", controlMode: "MANUAL",
+        cooldownUntil: new Date(NOON.getTime() + 60_000),
+      });
+      expect(decideAction(s, NOON).kind).toBe("TURN_OFF");
+    });
+  });
 });
 
 describe("isWithinWindow", () => {

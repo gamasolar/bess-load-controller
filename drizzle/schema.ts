@@ -14,6 +14,7 @@ export const users = mysqlTable("users", {
   loginMethod: varchar("loginMethod", { length: 64 }),
   passwordHash: varchar("passwordHash", { length: 255 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  disabled: boolean("disabled").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -21,6 +22,21 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+// ─── User invitations (admin gera, link de uso único) ────────
+export const userInvitations = mysqlTable("user_invitations", {
+  id: int("id").autoincrement().primaryKey(),
+  token: varchar("token", { length: 64 }).notNull().unique(),
+  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  createdById: int("createdById"),
+  expiresAt: timestamp("expiresAt"),
+  usedAt: timestamp("usedAt"),
+  usedByUserId: int("usedByUserId"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type UserInvitation = typeof userInvitations.$inferSelect;
+export type InsertUserInvitation = typeof userInvitations.$inferInsert;
 
 // ─── BESS Sites ──────────────────────────────────────────────
 export const bessSites = mysqlTable("bess_sites", {
@@ -44,6 +60,11 @@ export const bessSites = mysqlTable("bess_sites", {
   fusionsolarDeviceIds: text("fusionsolarDeviceIds"), // JSON string: battery device IDs ["id1","id2"]
   fusionsolarInverterIds: text("fusionsolarInverterIds"), // JSON string: inverter device IDs ["id1","id2"]
   fusionsolarPlantCode: varchar("fusionsolarPlantCode", { length: 64 }),
+  // Optional background image (uploaded by admin, served via /storage)
+  backgroundUrl: varchar("backgroundUrl", { length: 512 }),
+  // Coordenadas da usina (pra clima, mapa, etc.)
+  lat: float("lat"),
+  lng: float("lng"),
   // Status
   isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -155,6 +176,8 @@ export const bessConfig = mysqlTable("bess_config", {
   margemZonaCritica: int("margemZonaCritica").default(5).notNull(),
   intervaloPadrao: int("intervaloPadrao").default(15).notNull(),
   intervaloCritico: int("intervaloCritico").default(2).notNull(),
+  intervaloNoturno: int("intervaloNoturno").default(60).notNull(),
+  intervaloBombaSemSolar: int("intervaloBombaSemSolar").default(5).notNull(),
   cooldownAcao: int("cooldownAcao").default(5).notNull(),
   maxSemTelemetria: int("maxSemTelemetria").default(30).notNull(),
   controlMode: mysqlEnum("controlMode", ["AUTO", "MANUAL"]).default("AUTO").notNull(),
@@ -162,6 +185,17 @@ export const bessConfig = mysqlTable("bess_config", {
 });
 
 export type BessConfig = typeof bessConfig.$inferSelect;
+
+// ─── BESS Pump Daily (snapshot consolidado por dia, alimentado por job interno) ──
+export const bessPumpDaily = mysqlTable("bess_pump_daily", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD
+  secondsOn: float("secondsOn").default(0).notNull(),
+  kwhEstimado: float("kwhEstimado").default(0).notNull(),
+  cycles: int("cycles").default(0).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
 
 // ─── BESS Actions (audit log of every control decision/manual action) ──
 export const bessActions = mysqlTable("bess_actions", {

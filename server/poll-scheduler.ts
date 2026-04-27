@@ -22,9 +22,12 @@ import { evaluateAndAct } from "./control-engine";
 import { getSiteRuntimeState } from "./control-engine";
 
 const DELAY_BETWEEN_SITES_MS = 15_000; // respeitar rate limit Northbound (10s+)
+const WATCHDOG_PERIOD_MS = 30_000;     // re-avalia intervalo correto a cada 30s
 
 const _siteTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const _siteNextScheduledAt: Map<string, number> = new Map(); // ms epoch
 let _started = false;
+let _watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
 export function isInCriticalZone(
   soc: number,
@@ -32,6 +35,143 @@ export function isInCriticalZone(
   margemZonaCritica: number,
 ): boolean {
   return soc <= socMinDesliga + margemZonaCritica;
+}
+
+/**
+ * Projeta SOC após `intervalMinutes` dado batteryPower atual.
+ * Convenção: batteryPower < 0 = descarregando (kW), capacityKwh > 0.
+ * Retorna null se não houver dados suficientes pra projetar.
+ */
+export function projectSocAfter(opts: {
+  currentSoc: number | null | undefined;
+  batteryPowerKw: number | null | undefined;
+  capacityKwh: number | null | undefined;
+  intervalMinutes: number;
+}): number | null {
+  const { currentSoc, batteryPowerKw, capacityKwh, intervalMinutes } = opts;
+  if (currentSoc == null || batteryPowerKw == null || !capacityKwh || capacityKwh <= 0) {
+    return null;
+  }
+  // batteryPower negativo = descarga; positivo = carga.
+  // ΔSOC% = (kW × h) / kWh × 100
+  const deltaSoc = (batteryPowerKw * (intervalMinutes / 60)) / capacityKwh * 100;
+  return currentSoc + deltaSoc;
+}
+
+/** Janela de antecipação: projeta com horizonte = intervaloPadrao × N pra disparar
+ * crítico antes do SOC entrar na zona crítica. Maior = mais conservador. */
+const PROJECTION_HORIZON_FACTOR = 2;
+
+/** SOC limite acima do qual o intervalo é sempre o padrão (sem aceleração).
+ * Abaixo dele, escala gradual entre intervaloCritico e intervaloPadrao
+ * conforme SOC se aproxima da zona crítica. */
+const TRANSITION_UPPER_SOC = 50;
+
+/**
+ * Interpolação linear entre dois intervalos baseado em "quão perto" o SOC está
+ * da zona crítica. Quando SOC está logo acima da margem crítica, intervalo
+ * próximo do crítico; longe da margem, próximo do padrão.
+ *
+ * @param distancePp distância em pp acima da fronteira da zona crítica (≥ 0)
+ * @param rangePp largura da faixa de transição (pp)
+ */
+function interpolateInterval(
+  distancePp: number,
+  rangePp: number,
+  intervaloCritico: number,
+  intervaloPadrao: number,
+): number {
+  if (rangePp <= 0) return intervaloPadrao;
+  const ratio = Math.max(0, Math.min(1, distancePp / rangePp));
+  const value = intervaloCritico + (intervaloPadrao - intervaloCritico) * ratio;
+  return Math.max(1, Math.round(value));
+}
+
+/**
+ * Decide o intervalo de polling em minutos.
+ *
+ * Regras (ordem de precedência):
+ *   1. Fora da janela [horarioLiberacao, horarioCorte) E bomba OFF →
+ *      intervaloNoturno.
+ *   2. SOC em zona crítica → intervaloCritico (proteção contra blackout).
+ *   3. Descarga forte projetada → intervaloCritico (antecipa).
+ *   4. Faixa de transição (SOC entre crítica e crítica + margem×2) →
+ *      interpolação linear entre intervaloCritico e o intervalo "base"
+ *      (intervaloPadrao dentro do horário, intervaloBombaSemSolar fora).
+ *   5. Fora da janela E bomba ON → intervaloBombaSemSolar.
+ *   6. Caso contrário → intervaloPadrao.
+ */
+export function pickPollInterval(opts: {
+  socInCriticalZone: boolean;
+  pumpOff: boolean;
+  hourMinute: { h: number; m: number };
+  horarioLiberacao: string;
+  horarioCorte: string;
+  intervaloPadrao: number;
+  intervaloCritico: number;
+  intervaloNoturno: number;
+  intervaloBombaSemSolar: number;
+  // Projeção opcional — quando os 4 abaixo estão todos presentes, ativa regra 4.
+  currentSoc?: number | null;
+  batteryPowerKw?: number | null;
+  capacityKwh?: number | null;
+  criticalThreshold?: number;
+}): number {
+  const parseHHMM = (s: string): number => {
+    const parts = s.split(":");
+    const h = Number(parts[0]) || 0;
+    const m = Number(parts[1]) || 0;
+    return h * 60 + m;
+  };
+  const minutesNow = opts.hourMinute.h * 60 + opts.hourMinute.m;
+  const minLiberacao = parseHHMM(opts.horarioLiberacao);
+  const minCorte = parseHHMM(opts.horarioCorte);
+  const insideWindow = minutesNow >= minLiberacao && minutesNow < minCorte;
+  const outsideWindow = !insideWindow;
+
+  // 1. Fora do horário com bomba OFF → noturno
+  if (outsideWindow && opts.pumpOff) return opts.intervaloNoturno;
+
+  // 2. Zona crítica → crítico (proteção contra blackout)
+  if (opts.socInCriticalZone) return opts.intervaloCritico;
+
+  // 3. Descarga forte projetada → antecipa pra crítico
+  if (
+    opts.criticalThreshold !== undefined &&
+    opts.batteryPowerKw != null && opts.batteryPowerKw < 0
+  ) {
+    const projected = projectSocAfter({
+      currentSoc: opts.currentSoc,
+      batteryPowerKw: opts.batteryPowerKw,
+      capacityKwh: opts.capacityKwh,
+      intervalMinutes: opts.intervaloPadrao * PROJECTION_HORIZON_FACTOR,
+    });
+    if (projected !== null && projected <= opts.criticalThreshold) {
+      return opts.intervaloCritico;
+    }
+  }
+
+  // Intervalo "base" pro contexto: bomba ON fora do horário usa o intervalo de
+  // bomba sem solar; senão usa o padrão.
+  const baseInterval = (outsideWindow && !opts.pumpOff)
+    ? opts.intervaloBombaSemSolar
+    : opts.intervaloPadrao;
+
+  // 4. SOC abaixo do threshold de transição → escala gradual entre
+  //    intervaloCritico e baseInterval, conforme SOC se aproxima da zona crítica.
+  if (
+    opts.currentSoc != null &&
+    opts.currentSoc < TRANSITION_UPPER_SOC &&
+    opts.criticalThreshold !== undefined
+  ) {
+    const distancePp = opts.currentSoc - opts.criticalThreshold;
+    const rangePp = TRANSITION_UPPER_SOC - opts.criticalThreshold;
+    if (distancePp > 0 && rangePp > 0) {
+      return interpolateInterval(distancePp, rangePp, opts.intervaloCritico, baseInterval);
+    }
+  }
+
+  return baseInterval;
 }
 
 /**
@@ -52,9 +192,23 @@ async function pollSite(slug: string): Promise<void> {
     // Sites sem device IDs (ex.: piscinão) — não polla, mas avalia
     if (!site.fusionsolarDeviceIds || !isFusionSolarConfigured()) {
       await evaluateAndAct(slug);
-      const intervalMin = runtime.soc !== null && isInCriticalZone(runtime.soc, config.socMinDesliga, config.margemZonaCritica)
-        ? config.intervaloCritico
-        : config.intervaloPadrao;
+      const now = new Date();
+      const totalCapacityKwh = (site.bessCapacityKwh ?? 0) * (site.bessCount ?? 1);
+      const intervalMin = pickPollInterval({
+        socInCriticalZone: runtime.soc !== null && isInCriticalZone(runtime.soc, config.socMinDesliga, config.margemZonaCritica),
+        pumpOff: runtime.pumpState !== "ON",
+        hourMinute: { h: now.getHours(), m: now.getMinutes() },
+        horarioLiberacao: config.horarioLiberacao,
+        horarioCorte: config.horarioCorte,
+        intervaloPadrao: config.intervaloPadrao,
+        intervaloCritico: config.intervaloCritico,
+        intervaloNoturno: config.intervaloNoturno,
+        intervaloBombaSemSolar: config.intervaloBombaSemSolar,
+        currentSoc: runtime.soc,
+        batteryPowerKw: runtime.state.currentBatteryPower ?? null,
+        capacityKwh: totalCapacityKwh,
+        criticalThreshold: config.socMinDesliga + config.margemZonaCritica,
+      });
       scheduleNext(slug, intervalMin);
       return;
     }
@@ -75,7 +229,7 @@ async function pollSite(slug: string): Promise<void> {
     }
 
     const client = getFusionSolarClient();
-    const battery = await client.getBatteryRealKpi(batteryDevIdStr);
+    const battery = await client.getBatteryRealKpi(batteryDevIdStr, 41, site.id);
 
     const db = await getDb();
     if (battery && battery.battery_soc != null && db) {
@@ -107,10 +261,27 @@ async function pollSite(slug: string): Promise<void> {
     await evaluateAndAct(slug);
 
     const updated = await getSiteRuntimeState(slug);
-    const intervalMin = updated?.soc !== null && updated?.soc !== undefined
-      && isInCriticalZone(updated.soc, updated.config.socMinDesliga, updated.config.margemZonaCritica)
-      ? config.intervaloCritico
-      : config.intervaloPadrao;
+    const now = new Date();
+    const cfg = updated?.config ?? config;
+    const stateRef = updated?.state ?? runtime.state;
+    const totalCapacityKwh = (site.bessCapacityKwh ?? 0) * (site.bessCount ?? 1);
+    const socCritical = updated?.soc !== null && updated?.soc !== undefined
+      && isInCriticalZone(updated.soc, cfg.socMinDesliga, cfg.margemZonaCritica);
+    const intervalMin = pickPollInterval({
+      socInCriticalZone: !!socCritical,
+      pumpOff: (updated?.pumpState ?? runtime.pumpState) !== "ON",
+      hourMinute: { h: now.getHours(), m: now.getMinutes() },
+      horarioLiberacao: cfg.horarioLiberacao,
+      horarioCorte: cfg.horarioCorte,
+      intervaloPadrao: cfg.intervaloPadrao,
+      intervaloCritico: cfg.intervaloCritico,
+      intervaloNoturno: cfg.intervaloNoturno,
+      intervaloBombaSemSolar: cfg.intervaloBombaSemSolar,
+      currentSoc: updated?.soc ?? runtime.soc,
+      batteryPowerKw: stateRef.currentBatteryPower ?? null,
+      capacityKwh: totalCapacityKwh,
+      criticalThreshold: cfg.socMinDesliga + cfg.margemZonaCritica,
+    });
 
     scheduleNext(slug, intervalMin);
   } catch (e) {
@@ -121,12 +292,74 @@ async function pollSite(slug: string): Promise<void> {
 
 function scheduleNext(slug: string, intervalMinutes: number): void {
   const ms = intervalMinutes * 60_000;
+  const existing = _siteTimers.get(slug);
+  if (existing) clearTimeout(existing);
   const timer = setTimeout(() => pollSite(slug), ms);
   _siteTimers.set(slug, timer);
+  _siteNextScheduledAt.set(slug, Date.now() + ms);
+}
+
+/**
+ * A cada 30s, pra cada site:
+ *   - Lê o estado atual (SOC, batteryPower, pumpState).
+ *   - Recalcula o intervalo correto.
+ *   - Se a próxima fetch agendada está mais distante que o intervalo correto
+ *     a partir da última telemetria, dispara fetch já (e re-agenda).
+ * Custo: 0 chamadas FusionSolar — só substitui um timer por outro.
+ */
+async function watchdog(): Promise<void> {
+  for (const [slug] of _siteTimers) {
+    try {
+      const runtime = await getSiteRuntimeState(slug);
+      if (!runtime) continue;
+      const now = new Date();
+      const cfg = runtime.config;
+      const totalCapacityKwh = (runtime.site.bessCapacityKwh ?? 0) * (runtime.site.bessCount ?? 1);
+      const correct = pickPollInterval({
+        socInCriticalZone: runtime.soc !== null && isInCriticalZone(runtime.soc, cfg.socMinDesliga, cfg.margemZonaCritica),
+        pumpOff: runtime.pumpState !== "ON",
+        hourMinute: { h: now.getHours(), m: now.getMinutes() },
+        horarioLiberacao: cfg.horarioLiberacao,
+      horarioCorte: cfg.horarioCorte,
+        intervaloPadrao: cfg.intervaloPadrao,
+        intervaloCritico: cfg.intervaloCritico,
+        intervaloNoturno: cfg.intervaloNoturno,
+        intervaloBombaSemSolar: cfg.intervaloBombaSemSolar,
+        currentSoc: runtime.soc,
+        batteryPowerKw: runtime.state.currentBatteryPower ?? null,
+        capacityKwh: totalCapacityKwh,
+        criticalThreshold: cfg.socMinDesliga + cfg.margemZonaCritica,
+      });
+
+      const lastTelemetry = runtime.state.lastTelemetryAt
+        ? new Date(runtime.state.lastTelemetryAt).getTime()
+        : 0;
+      const elapsedMin = (Date.now() - lastTelemetry) / 60_000;
+      const nextScheduledAt = _siteNextScheduledAt.get(slug) ?? 0;
+      const minutesUntilNext = (nextScheduledAt - Date.now()) / 60_000;
+
+      // Se o intervalo correto já foi alcançado mas o timer atual ainda
+      // tem mais que correct/2 esperando, antecipa a fetch.
+      if (elapsedMin >= correct && minutesUntilNext > correct / 2) {
+        console.log(`[PollScheduler:Watchdog] ${slug}: SOC=${runtime.soc?.toFixed(1)}% intervalo correto=${correct}min · última fetch há ${elapsedMin.toFixed(1)}min · timer agendado ${minutesUntilNext.toFixed(1)}min — antecipando.`);
+        const existing = _siteTimers.get(slug);
+        if (existing) clearTimeout(existing);
+        _siteTimers.delete(slug);
+        pollSite(slug); // dispara já
+      }
+    } catch (e) {
+      console.warn(`[PollScheduler:Watchdog] ${slug} erro:`, e);
+    }
+  }
 }
 
 export async function startAdaptivePolling(): Promise<void> {
   if (_started) return;
+  // Defesa: nunca rodar em paralelo com o legacy startAutoFetch (v1).
+  if (process.env.USE_MVP_V2_CONTROL !== "true") {
+    console.warn("[PollScheduler] startAdaptivePolling ignorado — USE_MVP_V2_CONTROL≠true (v1 está ativo).");
+    return;
+  }
   _started = true;
 
   const db = await getDb();
@@ -143,6 +376,29 @@ export async function startAdaptivePolling(): Promise<void> {
   sites.forEach((site, i) => {
     setTimeout(() => pollSite(site.slug), 30_000 + i * DELAY_BETWEEN_SITES_MS);
   });
+
+  // Watchdog re-avalia intervalo correto a cada 30s
+  if (_watchdogTimer) clearInterval(_watchdogTimer);
+  _watchdogTimer = setInterval(() => {
+    watchdog().catch((e) => console.warn("[PollScheduler:Watchdog] erro geral:", e));
+  }, WATCHDOG_PERIOD_MS);
+}
+
+/**
+ * Força polling imediato de um site, cancelando o timer agendado.
+ * Útil quando config muda (intervalo, limites de SOC, etc.) e queremos que o
+ * novo valor entre em vigor sem esperar o próximo tick natural.
+ * Se o adaptive polling não está ativo, é no-op.
+ */
+export function triggerSitePoll(slug: string): void {
+  if (!_started) return;
+  const t = _siteTimers.get(slug);
+  if (t) clearTimeout(t);
+  _siteTimers.delete(slug);
+  // Dispara em microtask pra garantir que o caller já retornou
+  Promise.resolve().then(() => pollSite(slug)).catch((e) =>
+    console.warn(`[PollScheduler] triggerSitePoll erro em ${slug}:`, e),
+  );
 }
 
 export function stopAdaptivePolling(): void {
@@ -150,5 +406,8 @@ export function stopAdaptivePolling(): void {
     clearTimeout(timer);
   }
   _siteTimers.clear();
+  _siteNextScheduledAt.clear();
+  if (_watchdogTimer) clearInterval(_watchdogTimer);
+  _watchdogTimer = null;
   _started = false;
 }

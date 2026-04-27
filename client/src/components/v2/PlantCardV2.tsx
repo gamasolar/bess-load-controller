@@ -1,16 +1,22 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Power, Settings2, History, AlertTriangle, Battery } from "lucide-react";
+import { Settings2, History, AlertTriangle, Eye, Maximize2, X, BarChart3 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { ConfigModalV2 } from "./ConfigModalV2";
 import { HistoryModal } from "./HistoryModal";
+import { PumpStatsModal } from "./PumpStatsModal";
+import { WeatherWidget } from "./WeatherWidget";
+import { DecisionPanel } from "./DecisionPanel";
+import { BatteryVisual } from "./BatteryVisual";
+import { ZoneBar } from "./ZoneBar";
+import { PumpStatus } from "./PumpStatus";
 
 function ModeToggle({ slug, mode }: { slug: string; mode: "AUTO" | "MANUAL" }) {
   const utils = trpc.useUtils();
@@ -28,12 +34,15 @@ function ModeToggle({ slug, mode }: { slug: string; mode: "AUTO" | "MANUAL" }) {
     <Button
       variant="outline"
       size="sm"
-      className={`h-7 px-2.5 text-[11px] font-mono ${
-        mode === "AUTO" ? "text-blue-400 border-blue-400/30 bg-blue-500/5" : "text-amber-400 border-amber-400/30 bg-amber-500/5"
+      className={`h-8 px-3 text-[11px] font-mono font-bold tracking-wider ${
+        mode === "AUTO"
+          ? "text-blue-300 border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/20"
+          : "text-amber-300 border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20"
       }`}
       disabled={set.isPending}
       onClick={() => set.mutate({ slug, mode: next })}
       aria-label={`Alternar para modo ${next}`}
+      title={`Modo atual: ${mode}. Clique para mudar para ${next}.`}
     >
       {mode}
     </Button>
@@ -42,24 +51,9 @@ function ModeToggle({ slug, mode }: { slug: string; mode: "AUTO" | "MANUAL" }) {
 
 type Status = NonNullable<ReturnType<typeof trpc.bess.getSiteStatus.useQuery>["data"]>;
 
-function socColor(soc: number, blackout: number, desliga: number, religa: number): string {
-  if (soc <= blackout) return "bg-red-600 text-white";
-  if (soc <= desliga) return "bg-orange-500 text-white";
-  if (soc <= religa) return "bg-yellow-500 text-black";
-  return "bg-emerald-500 text-white";
-}
-
-function freshnessLabel(ageSeconds: number | null, lastTelemetryAt: Date | string | null): { text: string; tone: "ok" | "warn" | "stale" } {
-  if (lastTelemetryAt === null && ageSeconds === null) return { text: "sem telemetria", tone: "stale" };
-  const age = ageSeconds ?? 0;
-  if (age < 60) return { text: "atualizado agora", tone: "ok" };
-  if (age < 600) return { text: `há ${Math.round(age / 60)}min`, tone: "ok" };
-  if (age < 1800) return { text: `há ${Math.round(age / 60)}min`, tone: "warn" };
-  return { text: `há ${Math.round(age / 60)}min`, tone: "stale" };
-}
-
 export function PlantCardV2({ slug }: { slug: string }) {
   const utils = trpc.useUtils();
+  const { isAdmin } = useAuth();
   const { data, isLoading, error } = trpc.bess.getSiteStatus.useQuery(
     { slug },
     { refetchInterval: 30_000 },
@@ -68,6 +62,24 @@ export function PlantCardV2({ slug }: { slug: string }) {
   const [confirmOpen, setConfirmOpen] = useState<null | "ON" | "OFF">(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setExpanded(false); };
+    document.addEventListener("keydown", onKey);
+    // tenta fullscreen API (esconde browser chrome em monitor/TV)
+    const elem = wrapperRef.current;
+    if (elem && elem.requestFullscreen) {
+      elem.requestFullscreen().catch(() => {/* fallback é o overlay CSS */});
+    }
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    };
+  }, [expanded]);
 
   const command = trpc.bess.command.useMutation({
     onSuccess: (res) => {
@@ -81,7 +93,7 @@ export function PlantCardV2({ slug }: { slug: string }) {
 
   if (isLoading) {
     return (
-      <Card className="border-white/5 min-h-[280px] animate-pulse">
+      <Card className="border-white/5 min-h-[480px] animate-pulse">
         <CardContent className="p-6 flex items-center justify-center">
           <p className="text-muted-foreground">Carregando…</p>
         </CardContent>
@@ -100,122 +112,165 @@ export function PlantCardV2({ slug }: { slug: string }) {
 
   const s = data as Status;
   const soc = s.derived.soc;
-  const socDisplay = soc !== null ? soc.toFixed(1) : (s.state.currentSoc?.toFixed?.(1) ?? "—");
-  const colorClass = soc !== null
-    ? socColor(soc, s.config.socBlackout, s.config.socMinDesliga, s.config.socMinReliga)
-    : "bg-muted text-muted-foreground";
-  const fresh = freshnessLabel(s.derived.socAgeSeconds, s.state.lastTelemetryAt as any);
+  const socForDisplay = soc !== null ? soc : (typeof s.state.currentSoc === "number" ? s.state.currentSoc : null);
   const isOn = s.derived.pumpState === "ON";
   const noHardware = !s.site.mqttTopic;
   const cooldownActive = s.derived.cooldownRemainingMs > 0;
+  const inBlackout = soc !== null && soc <= s.config.socBlackout;
+
+  const zones = {
+    blackout: s.config.socBlackout,
+    desliga: s.config.socMinDesliga,
+    religa: s.config.socMinReliga,
+  };
+
+  const bgUrl = (s.site as { backgroundUrl?: string | null }).backgroundUrl ?? null;
+  const bgIsVideo = bgUrl ? /\.(mp4|webm)$/i.test(bgUrl) : false;
 
   return (
-    <Card className="border-white/5 bg-card">
-      <CardContent className="p-6 space-y-5">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${colorClass}`}>
-              <Battery className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold tracking-tight">{s.site.name}</h2>
-              <p className="text-xs text-muted-foreground">
-                {fresh.text}
-                <span className={`inline-block w-1.5 h-1.5 rounded-full ml-2 align-middle ${
-                  fresh.tone === "ok" ? "bg-emerald-500" : fresh.tone === "warn" ? "bg-yellow-500" : "bg-red-500"
-                }`} />
-              </p>
-            </div>
+    <div
+      ref={wrapperRef}
+      className={
+        expanded
+          ? "fixed inset-0 z-50 bg-black/95 overflow-y-auto p-4 md:p-8 flex items-start md:items-center justify-center"
+          : "contents"
+      }
+    >
+    <Card
+      className={
+        expanded
+          ? "border-white/10 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative w-full max-w-[1600px] md:text-[1.15em]"
+          : "border-white/5 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative"
+      }
+    >
+      {bgUrl && (
+        <>
+          {bgIsVideo ? (
+            <video
+              src={bgUrl} autoPlay loop muted playsInline
+              className="absolute inset-0 w-full h-full object-cover opacity-25 pointer-events-none"
+            />
+          ) : (
+            <div
+              className="absolute inset-0 bg-cover bg-center opacity-25 pointer-events-none"
+              style={{ backgroundImage: `url(${bgUrl})` }}
+            />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-br from-card/70 via-card/60 to-card/80 pointer-events-none" />
+        </>
+      )}
+      <CardContent className={expanded ? "pt-4 px-6 pb-6 md:pt-5 md:px-10 md:pb-10 space-y-5 relative" : "pt-3 px-4 pb-4 md:pt-3.5 md:px-5 md:pb-5 space-y-3 relative"}>
+        {/* Header — esquerda fixada à borda; botões fixados à direita */}
+        <div className="flex items-start justify-between gap-4 flex-nowrap">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg md:text-xl font-bold tracking-tight truncate leading-tight">{s.site.name}</h2>
+            <p className="text-[11px] text-muted-foreground mt-1 flex items-center gap-2 whitespace-nowrap overflow-hidden">
+              <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${s.site.fusionsolarConfigured ? "bg-emerald-500" : "bg-zinc-600"}`} />
+              <span>FusionSolar {s.site.fusionsolarConfigured ? "OK" : "off"}</span>
+              <span className="text-zinc-700">·</span>
+              <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${s.state.mqttConnected ? "bg-emerald-500" : "bg-red-500"}`} />
+              <span>MQTT {s.state.mqttConnected ? "OK" : "off"}</span>
+            </p>
           </div>
-          <div className="flex items-center gap-1">
-            <ModeToggle slug={slug} mode={s.config.controlMode as "AUTO" | "MANUAL"} />
-            <Button variant="ghost" size="icon" aria-label="Configurações" onClick={() => setConfigOpen(true)}>
-              <Settings2 className="w-4 h-4" />
+          <div className="flex items-center gap-0.5 shrink-0 flex-nowrap">
+            {/* Ícones secundários — todos com tooltip explicativo no hover */}
+            {isAdmin && (
+              <Button
+                variant="ghost" size="icon" className="h-8 w-8"
+                aria-label="Configurações"
+                title="Configurações de controle (limites, intervalos, horários)"
+                onClick={() => setConfigOpen(true)}
+              >
+                <Settings2 className="w-4 h-4" />
+              </Button>
+            )}
+            <Button
+              variant="ghost" size="icon" className="h-8 w-8"
+              aria-label={expanded ? "Sair de tela cheia" : "Tela cheia"}
+              title={expanded ? "Sair do modo TV (Esc)" : "Modo TV / monitor cheio"}
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded ? <X className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             </Button>
-            <Button variant="ghost" size="icon" aria-label="Histórico" onClick={() => setHistoryOpen(true)}>
+            <Button
+              variant="ghost" size="icon" className="h-8 w-8"
+              aria-label="Operação da bomba"
+              title="Operação da bomba (gráfico de horas ligada)"
+              onClick={() => setStatsOpen(true)}
+            >
+              <BarChart3 className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost" size="icon" className="h-8 w-8"
+              aria-label="Histórico"
+              title="Histórico de ações e decisões"
+              onClick={() => setHistoryOpen(true)}
+            >
               <History className="w-4 h-4" />
             </Button>
+            {!isAdmin && (
+              <span title="Acesso somente-leitura — pra alterar peça acesso de admin" className="text-zinc-500 px-1">
+                <Eye className="w-4 h-4" />
+              </span>
+            )}
+            {/* Botão AUTO/MANUAL fixado na extremidade direita, separado por gap maior */}
+            <div className="ml-2">
+              {isAdmin ? (
+                <ModeToggle slug={slug} mode={s.config.controlMode as "AUTO" | "MANUAL"} />
+              ) : (
+                <span
+                  className="h-8 px-3 inline-flex items-center text-[11px] font-mono font-bold tracking-wider rounded-md border border-zinc-700 bg-zinc-800/40 text-zinc-300"
+                  title={`Modo de controle atual: ${s.config.controlMode} (somente-leitura)`}
+                >
+                  {s.config.controlMode}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* SOC display */}
-        <div className="text-center py-2">
-          <div className={`text-6xl md:text-7xl font-bold font-mono ${
-            soc !== null && soc <= s.config.socMinDesliga ? "text-red-500"
-            : soc !== null && soc <= s.config.socMinReliga ? "text-yellow-500"
-            : "text-foreground"
-          }`}>
-            {socDisplay}
-            <span className="text-2xl text-muted-foreground ml-1">%</span>
+        {/* Battery centralizada (padrão único — desktop, tablet e mobile) */}
+        <div className="flex flex-col items-center gap-3">
+          <BatteryVisual
+            soc={socForDisplay}
+            socSource={s.derived.socSource as "REAL" | "ESTIMATED" | null}
+            zones={zones}
+            batteryPower={typeof s.state.currentBatteryPower === "number" ? s.state.currentBatteryPower : null}
+            lastTelemetryAt={s.state.lastTelemetryAt as Date | string | null}
+          />
+
+          {/* Zones + decisão ocupam toda a largura abaixo da bateria */}
+          <div className="w-full space-y-2.5">
+            <ZoneBar soc={socForDisplay} zones={zones} />
+            <DecisionPanel s={s} />
           </div>
-          {s.derived.socSource === "ESTIMATED" && (
-            <Badge variant="outline" className="mt-2 text-xs">SOC estimado (Coulomb)</Badge>
-          )}
-          {soc === null && (
-            <Badge variant="outline" className="mt-2 text-xs text-muted-foreground">Sem dado fresco</Badge>
-          )}
         </div>
 
-        {/* SOC bar */}
-        <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-          <div
-            className={`absolute inset-y-0 left-0 transition-all ${
-              soc !== null && soc <= s.config.socBlackout ? "bg-red-600"
-              : soc !== null && soc <= s.config.socMinDesliga ? "bg-orange-500"
-              : soc !== null && soc <= s.config.socMinReliga ? "bg-yellow-500"
-              : "bg-emerald-500"
-            }`}
-            style={{ width: soc !== null ? `${Math.min(100, Math.max(0, soc))}%` : "0%" }}
+        {/* Weather (acima do botão de ligar) */}
+        <div className="flex justify-end">
+          <WeatherWidget slug={slug} />
+        </div>
+
+        {/* Pump */}
+        <div className="border-t border-white/5 pt-3">
+          <PumpStatus
+            pumpState={s.derived.pumpState as "ON" | "OFF" | "UNKNOWN"}
+            noHardware={noHardware}
+            readOnly={!isAdmin}
+            cooldownActive={cooldownActive}
+            cooldownRemainingMs={s.derived.cooldownRemainingMs}
+            busy={command.isPending}
+            onToggle={() => setConfirmOpen(isOn ? "OFF" : "ON")}
           />
         </div>
 
-        {/* Pump control */}
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-xs text-muted-foreground uppercase tracking-wider">Bomba</p>
-            <p className={`text-xl font-bold ${isOn ? "text-emerald-500" : "text-muted-foreground"}`}>
-              {noHardware ? "—" : (isOn ? "LIGADA" : "DESLIGADA")}
+        {/* Blackout banner */}
+        {inBlackout && (
+          <div className="flex items-start gap-2 rounded-md bg-red-500/15 border border-red-500/40 px-3 py-2 animate-pulse">
+            <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+            <p className="text-sm text-red-300">
+              <strong>SOC em zona de BLACKOUT</strong> — desligamento forçado, mesmo em modo MANUAL.
             </p>
-            {cooldownActive && (
-              <p className="text-xs text-yellow-500 mt-1">
-                Cooldown {Math.ceil(s.derived.cooldownRemainingMs / 1000)}s
-              </p>
-            )}
-          </div>
-          {!noHardware && (
-            <Button
-              variant={isOn ? "outline" : "default"}
-              size="lg"
-              className="min-h-[60px] min-w-[120px] text-lg"
-              disabled={command.isPending || cooldownActive}
-              onClick={() => setConfirmOpen(isOn ? "OFF" : "ON")}
-            >
-              <Power className="w-5 h-5 mr-2" />
-              {isOn ? "Desligar" : "Ligar"}
-            </Button>
-          )}
-        </div>
-
-        {/* Next action hint */}
-        {s.nextAction && (
-          <div className="rounded-md border border-white/5 bg-muted/30 px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Próxima ação prevista</p>
-            <p className="text-sm">
-              <span className={`font-mono ${
-                s.nextAction.kind === "TURN_ON" ? "text-emerald-500"
-                : s.nextAction.kind === "TURN_OFF" ? "text-red-500"
-                : "text-muted-foreground"
-              }`}>{s.nextAction.kind}</span>
-              <span className="text-muted-foreground"> · {s.nextAction.reason}</span>
-            </p>
-          </div>
-        )}
-
-        {soc !== null && soc <= s.config.socBlackout && (
-          <div className="flex items-start gap-2 rounded-md bg-red-500/10 border border-red-500/30 px-3 py-2">
-            <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-            <p className="text-sm text-red-500">SOC em zona de blackout — desligamento forçado.</p>
           </div>
         )}
       </CardContent>
@@ -226,18 +281,20 @@ export function PlantCardV2({ slug }: { slug: string }) {
             <AlertDialogTitle>
               {confirmOpen === "ON" ? "Ligar bomba?" : "Desligar bomba?"}
             </AlertDialogTitle>
-            <AlertDialogDescription>
-              {s.site.name} · SOC atual: {socDisplay}%
-              {soc !== null && soc <= s.config.socMinDesliga && confirmOpen === "ON" && (
-                <span className="block mt-2 text-yellow-500">
-                  ⚠ SOC abaixo do mínimo ({s.config.socMinDesliga}%) — sistema vai desligar de novo automaticamente.
-                </span>
-              )}
-              {s.config.controlMode === "AUTO" && (
-                <span className="block mt-2 text-muted-foreground text-xs">
-                  Modo AUTO ativo: ação manual pode ser revertida na próxima avaliação.
-                </span>
-              )}
+            <AlertDialogDescription asChild>
+              <div>
+                <p>{s.site.name} · SOC atual: <strong>{socForDisplay !== null ? socForDisplay.toFixed(0) : "—"}%</strong></p>
+                {soc !== null && soc <= s.config.socMinDesliga && confirmOpen === "ON" && (
+                  <p className="mt-2 text-yellow-500">
+                    ⚠ SOC abaixo do mínimo ({s.config.socMinDesliga}%) — sistema vai desligar de novo automaticamente.
+                  </p>
+                )}
+                {s.config.controlMode === "AUTO" && (
+                  <p className="mt-2 text-muted-foreground text-xs">
+                    Modo AUTO ativo: ação manual pode ser revertida na próxima avaliação.
+                  </p>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -258,6 +315,8 @@ export function PlantCardV2({ slug }: { slug: string }) {
 
       <ConfigModalV2 open={configOpen} onOpenChange={setConfigOpen} slug={slug} initial={s.config} />
       <HistoryModal open={historyOpen} onOpenChange={setHistoryOpen} slug={slug} siteName={s.site.name} />
+      <PumpStatsModal open={statsOpen} onOpenChange={setStatsOpen} slug={slug} siteName={s.site.name} />
     </Card>
+    </div>
   );
 }

@@ -148,17 +148,59 @@ async function waitForRateLimit(): Promise<void> {
   _lastApiCallTime = Date.now();
 }
 
-/** Handle 407 rate limit: set exponential backoff */
-function onRateLimitHit(): void {
+/**
+ * Handle 407 rate limit: set exponential backoff (global — Huawei rate limit é por
+ * API key compartilhada) e abre alarme RATE_LIMIT_FUSIONSOLAR.
+ *
+ * Se `siteId` for passado, abre alarme APENAS naquele site (chamada com contexto
+ * de polling de um site específico). Senão (login, station list, etc.) abre em
+ * todos os sites com FusionSolar configurado — fallback conservador.
+ */
+function onRateLimitHit(siteId?: number): void {
   _consecutiveRateLimits++;
   const backoffMs = Math.min(BACKOFF_BASE_MS * Math.pow(2, _consecutiveRateLimits - 1), MAX_BACKOFF_MS);
   _backoffUntil = Date.now() + backoffMs;
-  console.warn(`[FusionSolar] Rate limit 407 hit (${_consecutiveRateLimits}x). Backing off for ${Math.round(backoffMs / 1000)}s.`);
+  console.warn(`[FusionSolar] Rate limit 407 hit (${_consecutiveRateLimits}x)${siteId ? ` [siteId=${siteId}]` : ""}. Backing off for ${Math.round(backoffMs / 1000)}s.`);
+  openRateLimitAlarms(backoffMs, siteId).catch(e => console.warn("[FusionSolar] openRateLimitAlarms err:", e));
 }
 
-/** Reset backoff counter on successful call */
-function onApiSuccess(): void {
-  _consecutiveRateLimits = 0;
+/**
+ * Reset backoff counter and close alarmes RATE_LIMIT_FUSIONSOLAR.
+ *
+ * Quando `siteId` é passado, fecha apenas o alarme daquele site (comportamento
+ * granular pra escala). Sem siteId, fecha em todos os sites — usado por
+ * caminhos sem contexto de site (login, etc.).
+ */
+function onApiSuccess(siteId?: number): void {
+  if (_consecutiveRateLimits > 0) {
+    _consecutiveRateLimits = 0;
+  }
+  closeRateLimitAlarms(siteId).catch(e => console.warn("[FusionSolar] closeRateLimitAlarms err:", e));
+}
+
+async function openRateLimitAlarms(backoffMs: number, siteId?: number): Promise<void> {
+  const { getAllSites, getSiteById, openAlarmIfMissing } = await import("./db");
+  const seconds = Math.round(backoffMs / 1000);
+  const desc = `Huawei FusionSolar respondeu 407 (rate limit). Polling pausado por ~${seconds}s. Próximo fetch após backoff.`;
+  if (siteId) {
+    const site = await getSiteById(siteId);
+    if (site?.fusionsolarPlantCode) {
+      await openAlarmIfMissing(siteId, "WARNING", "RATE_LIMIT_FUSIONSOLAR", desc);
+    }
+    return;
+  }
+  // Sem contexto de site → abre em todos os sites com FS configurado
+  const sites = await getAllSites();
+  for (const site of sites) {
+    if (site.fusionsolarPlantCode) {
+      await openAlarmIfMissing(site.id, "WARNING", "RATE_LIMIT_FUSIONSOLAR", desc);
+    }
+  }
+}
+
+async function closeRateLimitAlarms(siteId?: number): Promise<void> {
+  const { closeAlarmsByType } = await import("./db");
+  await closeAlarmsByType("RATE_LIMIT_FUSIONSOLAR", siteId);
 }
 
 // ─── FusionSolar Client ─────────────────────────────────────
@@ -248,7 +290,7 @@ class FusionSolarClient {
     return true;
   }
 
-  private async apiPost(endpoint: string, payload: Record<string, unknown>): Promise<any> {
+  private async apiPost(endpoint: string, payload: Record<string, unknown>, siteId?: number): Promise<any> {
     if (!await this.ensureAuthenticated()) {
       throw new Error("FusionSolar authentication failed");
     }
@@ -277,13 +319,13 @@ class FusionSolarClient {
     const data = await resp.json();
 
     if (data.success === true || data.failCode === 0) {
-      onApiSuccess();
+      onApiSuccess(siteId);
       return data.data;
     }
 
     // Handle rate limit (failCode 407)
     if (data.failCode === 407) {
-      onRateLimitHit();
+      onRateLimitHit(siteId);
       throw new Error(`FusionSolar API rate limited (407) on ${endpoint}. Backing off.`);
     }
 
@@ -305,11 +347,11 @@ class FusionSolarClient {
         });
         const retryData = await retryResp.json();
         if (retryData.success === true || retryData.failCode === 0) {
-          onApiSuccess();
+          onApiSuccess(siteId);
           return retryData.data;
         }
         if (retryData.failCode === 407) {
-          onRateLimitHit();
+          onRateLimitHit(siteId);
           throw new Error(`FusionSolar API rate limited (407) on ${endpoint} retry. Backing off.`);
         }
       }
@@ -342,9 +384,9 @@ class FusionSolarClient {
 
   // ── Real-Time Data ──────────────────────────────────────
 
-  async getBatteryRealKpi(devIds: string, devTypeId: number = 41): Promise<BatteryRealTimeData | null> {
+  async getBatteryRealKpi(devIds: string, devTypeId: number = 41, siteId?: number): Promise<BatteryRealTimeData | null> {
     try {
-      const data = await this.apiPost("getDevRealKpi", { devIds, devTypeId });
+      const data = await this.apiPost("getDevRealKpi", { devIds, devTypeId }, siteId);
       if (!data || !Array.isArray(data) || data.length === 0) return null;
 
       const deviceData = data[0];

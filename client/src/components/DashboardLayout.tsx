@@ -28,14 +28,18 @@ import {
   PanelLeft,
   Zap,
   Battery,
+  Settings,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
 
-const menuItems = [
+const baseMenu = [
   { icon: LayoutDashboard, label: "Visão Geral", path: "/" },
+];
+const adminMenu = [
+  { icon: Settings, label: "Configurações", path: "/configuracoes" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -119,12 +123,13 @@ function DashboardLayoutContent({
   children,
   setSidebarWidth,
 }: DashboardLayoutContentProps) {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
+  const menuItems = isAdmin ? [...baseMenu, ...adminMenu] : baseMenu;
   const activeMenuItem = menuItems.find((item) => item.path === location);
   const isMobile = useIsMobile();
 

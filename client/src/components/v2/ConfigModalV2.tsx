@@ -17,6 +17,8 @@ type ConfigShape = {
   margemZonaCritica: number;
   intervaloPadrao: number;
   intervaloCritico: number;
+  intervaloNoturno: number;
+  intervaloBombaSemSolar: number;
   cooldownAcao: number;
   maxSemTelemetria: number;
 };
@@ -57,6 +59,8 @@ export function ConfigModalV2({
     { k: "margemZonaCritica", label: "Margem zona crítica", min: 0, max: 20, suffix: "p.p." },
     { k: "intervaloPadrao", label: "Intervalo padrão de polling", min: 2, max: 60, suffix: "min" },
     { k: "intervaloCritico", label: "Intervalo crítico de polling", min: 1, max: 15, suffix: "min" },
+    { k: "intervaloNoturno", label: "Intervalo fora do horário (bomba OFF)", min: 15, max: 240, suffix: "min" },
+    { k: "intervaloBombaSemSolar", label: "Intervalo fora do horário (bomba ON, sem solar)", min: 1, max: 30, suffix: "min" },
     { k: "cooldownAcao", label: "Cooldown entre ações", min: 1, max: 30, suffix: "min" },
     { k: "maxSemTelemetria", label: "Máximo sem telemetria", min: 5, max: 120, suffix: "min" },
   ];

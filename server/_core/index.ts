@@ -5,10 +5,12 @@ import path from "node:path";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerAuthRoutes } from "../auth";
+import { registerUploadRoutes } from "../upload-routes";
 import { appRouter, startAutoFetch, startMqttStateSync } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { startAdaptivePolling } from "../poll-scheduler";
+import { startPumpDailyJob } from "../pump-daily-job";
 
 function getStorageRoot(): string {
   const override = process.env.STORAGE_DIR;
@@ -52,6 +54,9 @@ async function startServer() {
   // Local email/password auth: POST /api/auth/{login,register}, GET /api/auth/status
   registerAuthRoutes(app);
 
+  // Admin uploads: POST/DELETE /api/admin/sites/:id/background
+  registerUploadRoutes(app);
+
   // tRPC API
   app.use(
     "/api/trpc",
@@ -88,6 +93,8 @@ async function startServer() {
     }
     // MQTT polling + DB sync runs in both modes (state observation only)
     startMqttStateSync();
+    // Snapshot diário da operação da bomba (recovery + cron horário)
+    startPumpDailyJob();
   });
 }
 
