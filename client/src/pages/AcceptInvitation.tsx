@@ -56,10 +56,22 @@ export default function AcceptInvitation() {
     <CenteredLayout>
       <Card className="border-white/5">
         <CardContent className="p-6 space-y-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+          {/* Logomarca centralizada */}
+          <div className="flex justify-center">
+            <img
+              src="/logo-full.png"
+              alt="Gama Solar"
+              className="h-12 object-contain"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+                e.currentTarget.nextElementSibling?.classList.remove("hidden");
+              }}
+            />
+            <div className="hidden w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
               <Battery className="w-5 h-5 text-primary" />
             </div>
+          </div>
+          <div className="flex items-center gap-3">
             <div>
               <h1 className="text-lg font-bold">Bem-vindo à Gama Solar</h1>
               <p className="text-xs text-muted-foreground">Complete seu cadastro</p>

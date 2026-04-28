@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent } from "@/components/ui/card";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -13,15 +14,22 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Copy, KeyRound, UserPlus, Power, Pencil, Trash2 } from "lucide-react";
+import { Copy, KeyRound, UserPlus, Power, Pencil, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 type Role = "user" | "admin";
 type UserRow = {
   id: number; openId: string; name: string | null; email: string | null;
-  role: Role; disabled: boolean;
+  role: Role; disabled: boolean; avatarUrl?: string | null;
   createdAt: Date | string; lastSignedIn: Date | string;
 };
+
+function userInitials(name: string | null | undefined): string {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return parts.slice(0, 3).map((p) => p[0]?.toUpperCase() ?? "").join("");
+}
 
 function fmt(t: Date | string | null | undefined): string {
   if (!t) return "—";
@@ -127,6 +135,94 @@ function CreateInvite() {
   );
 }
 
+function AvatarUploader({ user, onChanged }: { user: UserRow; onChanged: (url: string | null) => void }) {
+  const utils = trpc.useUtils();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<string | null>(user.avatarUrl ?? null);
+
+  async function handleFile(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Selecione uma imagem (JPG, PNG ou WebP)");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("Imagem excede 25 MB");
+      return;
+    }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/users/${user.id}/avatar`, { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Falha no upload");
+      setPreview(json.avatarUrl);
+      onChanged(json.avatarUrl);
+      utils.users.list.invalidate();
+      utils.auth.me.invalidate();
+      toast.success("Avatar atualizado");
+    } catch (e: any) {
+      toast.error(e.message ?? "Falha no upload");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAvatar() {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/users/${user.id}/avatar`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Falha ao remover");
+      setPreview(null);
+      onChanged(null);
+      utils.users.list.invalidate();
+      utils.auth.me.invalidate();
+      toast.success("Avatar removido");
+    } catch (e: any) {
+      toast.error(e.message ?? "Falha ao remover");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <Avatar className="h-16 w-16 border">
+        {preview && <AvatarImage src={preview} alt={user.name ?? ""} />}
+        <AvatarFallback className="text-base font-semibold tracking-wider bg-primary/10 text-primary">
+          {userInitials(user.name)}
+        </AvatarFallback>
+      </Avatar>
+      <div className="flex flex-col gap-1.5">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) handleFile(f);
+            e.target.value = "";
+          }}
+        />
+        <div className="flex gap-1.5">
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => fileRef.current?.click()} className="gap-1.5">
+            <Upload className="w-3.5 h-3.5" /> {preview ? "Trocar" : "Enviar"}
+          </Button>
+          {preview && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={removeAvatar} className="gap-1.5 text-red-400">
+              <X className="w-3.5 h-3.5" /> Remover
+            </Button>
+          )}
+        </div>
+        <p className="text-[10px] text-muted-foreground">JPG/PNG/WebP até 25 MB</p>
+      </div>
+    </div>
+  );
+}
+
 function EditUser({ user }: { user: UserRow }) {
   const utils = trpc.useUtils();
   const [open, setOpen] = useState(false);
@@ -155,7 +251,8 @@ function EditUser({ user }: { user: UserRow }) {
           <DialogHeader>
             <DialogTitle>Editar usuário</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-4">
+            <AvatarUploader user={user} onChanged={() => {}} />
             <div>
               <Label>Nome</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5" />

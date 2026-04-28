@@ -445,9 +445,32 @@ export function startAutoFetch() {
  * sets up a callback to sync real Sonoff state to the database,
  * and starts polling every 30 seconds.
  */
-// Counter de polls MQTT consecutivos onde estado convergiu — evita flutter
-// de alarmes DIVERGENCE em race conditions (ver lógica em onStateChange abaixo).
-const _convergenceStreak: Map<number, number> = new Map();
+// Sweep periódico que fecha alarmes DIVERGENCE quando estado já convergiu.
+// O callback onStateChange do MqttClient só dispara em transição (power ou online
+// mudou); em estado estável ele nunca seria chamado e o alarme ficaria stuck.
+const DIVERGENCE_AUTO_CLOSE_MS = 30_000;
+let divergenceAutoCloseInterval: NodeJS.Timeout | null = null;
+
+async function sweepDivergenceAutoClose() {
+  try {
+    const sites = await getAllSites();
+    for (const site of sites) {
+      if (!site.mqttTopic) continue;
+      const fresh = await getBessState(site.id);
+      if (!fresh || !fresh.sonoffOnline) continue;
+      const realPower = fresh.sonoffPower;
+      if (realPower === "UNKNOWN") continue;
+      const expectedLoad = fresh.loadStatus ?? "off";
+      const converged = (expectedLoad === "on" && realPower === "ON") ||
+                        (expectedLoad === "off" && realPower === "OFF");
+      if (converged) {
+        await closeAlarmsByType("DIVERGENCE", site.id);
+      }
+    }
+  } catch (e) {
+    console.warn("[MqttSync] sweepDivergenceAutoClose erro:", e);
+  }
+}
 
 export async function startMqttStateSync() {
   if (!isMqttConfigured()) {
@@ -505,32 +528,32 @@ export async function startMqttStateSync() {
         // Estratégias pra evitar flutter:
         //   1. Re-leitura FRESCA (cache stale do bess_state vence em microssegundos).
         //   2. Suprime detecção durante cooldown (janela natural de dessincronia).
-        //   3. Fecha alarme só após N polls convergentes consecutivos (60s) — evita
-        //      alarme piscar em race conditions.
+        //   3. Suprime se manobra acabou de acontecer (< 30s): applyDecision envia
+        //      MQTT antes de gravar loadStatus/cooldownUntil; o broadcast do Sonoff
+        //      pode chegar aqui antes do UPDATE, gerando falso positivo.
+        //   4. Auto-close vive no sweep periódico (DIVERGENCE_AUTO_CLOSE_MS), porque
+        //      o callback só dispara em transição de estado e em estado estável
+        //      jamais convergeria sozinho.
         const realPower = realState.power;
         if (realPower !== "UNKNOWN" && realState.online) {
           const fresh = await getBessState(site.id);
           const expectedLoad = fresh?.loadStatus ?? "off";
+          const now = Date.now();
           const inCooldown = fresh?.cooldownUntil
-            ? new Date(fresh.cooldownUntil).getTime() > Date.now()
+            ? new Date(fresh.cooldownUntil).getTime() > now
+            : false;
+          const recentManeuver = fresh?.lastManeuverAt
+            ? now - new Date(fresh.lastManeuverAt).getTime() < 30_000
             : false;
           const isDivergent = (expectedLoad === "on" && realPower === "OFF") ||
                               (expectedLoad === "off" && realPower === "ON");
 
-          if (isDivergent && !inCooldown) {
-            _convergenceStreak.set(site.id, 0);
+          if (isDivergent && !inCooldown && !recentManeuver) {
             console.warn(`[MqttSync] DIVERGÊNCIA ${site.slug}: sistema=${expectedLoad} sonoff=${realPower}`);
             await addEvent(site.id, "DIVERGENCE",
               `Estado divergente: sistema diz carga ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
             await openAlarmIfMissing(site.id, "WARNING", "DIVERGENCE",
               `Divergência: carga deveria estar ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
-          } else if (!isDivergent) {
-            const streak = (_convergenceStreak.get(site.id) ?? 0) + 1;
-            _convergenceStreak.set(site.id, streak);
-            // Polling MQTT a cada 30s → 2 polls = 60s de convergência sustentada
-            if (streak >= 2) {
-              await closeAlarmsByType("DIVERGENCE", site.id);
-            }
           }
         }
       } catch (e) {
@@ -542,6 +565,9 @@ export async function startMqttStateSync() {
     const connected = await mqtt.connect();
     if (connected) {
       mqtt.startPolling(30_000); // Poll every 30 seconds
+      if (!divergenceAutoCloseInterval) {
+        divergenceAutoCloseInterval = setInterval(sweepDivergenceAutoClose, DIVERGENCE_AUTO_CLOSE_MS);
+      }
       console.log(`[MqttSync] Ativo: ${trackedCount} dispositivo(s) rastreado(s), polling a cada 30s.`);
     } else {
       console.warn("[MqttSync] Falha ao conectar ao broker MQTT.");
@@ -560,6 +586,7 @@ export const appRouter = router({
     health: publicProcedure
       .input(z.object({ timestamp: z.number().min(0).optional() }).optional())
       .query(() => ({ ok: true })),
+    serverTime: publicProcedure.query(() => ({ now: Date.now(), tz: "America/Sao_Paulo" })),
     info: systemAdminEndpoints.info,
     clearResolvedAlarms: systemAdminEndpoints.clearResolvedAlarms,
   }),
@@ -1014,6 +1041,7 @@ export const appRouter = router({
       .input(z.object({
         slug: z.string(),
         range: z.enum(["day", "week", "month", "year"]).default("week"),
+        anchor: z.number().optional(), // ms epoch — drilldown anchor (specific day/month)
       }))
       .query(async ({ input }) => {
         await ensureSeeded();
@@ -1025,22 +1053,39 @@ export const appRouter = router({
         // CV → kW (1 CV ≈ 0.7355 kW). pumpPowerCv é potência por bomba; * pumpCount.
         const totalKwPump = (site.pumpPowerCv ?? 0) * (site.pumpCount ?? 0) * 0.7355;
 
-        // Janela de busca + bucket size
+        // Janela de busca + bucket size. Quando `anchor` vem definido, a janela
+        // é fixada nesse ponto (mês ou dia específico) em vez de rolling até now.
         const now = new Date();
+        const anchorDate = input.anchor ? new Date(input.anchor) : now;
         let from: Date;
+        let to: Date;
         let bucketKind: "hour" | "day" | "month";
         let bucketCount: number;
         if (input.range === "day") {
-          from = new Date(now); from.setHours(0, 0, 0, 0);
+          from = new Date(anchorDate); from.setHours(0, 0, 0, 0);
+          to = new Date(from); to.setDate(to.getDate() + 1);
           bucketKind = "hour"; bucketCount = 24;
         } else if (input.range === "week") {
-          from = new Date(now); from.setDate(from.getDate() - 6); from.setHours(0, 0, 0, 0);
+          from = new Date(anchorDate); from.setDate(from.getDate() - 6); from.setHours(0, 0, 0, 0);
+          to = new Date(anchorDate); to.setHours(0, 0, 0, 0); to.setDate(to.getDate() + 1);
           bucketKind = "day"; bucketCount = 7;
         } else if (input.range === "month") {
-          from = new Date(now); from.setDate(from.getDate() - 29); from.setHours(0, 0, 0, 0);
-          bucketKind = "day"; bucketCount = 30;
+          if (input.anchor) {
+            // Mês específico (1º ao último dia do mês do anchor)
+            from = new Date(anchorDate); from.setDate(1); from.setHours(0, 0, 0, 0);
+            to = new Date(from); to.setMonth(to.getMonth() + 1);
+            bucketCount = Math.round((to.getTime() - from.getTime()) / 86_400_000);
+          } else {
+            // Rolling 30 dias
+            from = new Date(now); from.setDate(from.getDate() - 29); from.setHours(0, 0, 0, 0);
+            to = new Date(now); to.setHours(0, 0, 0, 0); to.setDate(to.getDate() + 1);
+            bucketCount = 30;
+          }
+          bucketKind = "day";
         } else {
-          from = new Date(now); from.setMonth(from.getMonth() - 11); from.setDate(1); from.setHours(0, 0, 0, 0);
+          // 12 meses terminando no anchor (ou now)
+          from = new Date(anchorDate); from.setMonth(from.getMonth() - 11); from.setDate(1); from.setHours(0, 0, 0, 0);
+          to = new Date(anchorDate); to.setDate(1); to.setHours(0, 0, 0, 0); to.setMonth(to.getMonth() + 1);
           bucketKind = "month"; bucketCount = 12;
         }
 
@@ -1061,7 +1106,7 @@ export const appRouter = router({
         // O v1 antigo (até 15:11 BRT 2026-04-26) não escreveu TURN_ON/OFF — esse hiato
         // é mostrado como zero. A partir do v2 a contagem fica precisa ao segundo.
 
-        // Ações dentro do range, ascendente
+        // Ações dentro do range [from, to), ascendente
         const rows = await db
           .select({ timestamp: bessActions.timestamp, action: bessActions.action })
           .from(bessActions)
@@ -1069,6 +1114,7 @@ export const appRouter = router({
             eq(bessActions.siteId, site.id),
             inArray(bessActions.action, ["TURN_ON", "TURN_OFF"]),
             gte(bessActions.timestamp, from),
+            lt(bessActions.timestamp, to),
           ))
           .orderBy(asc(bessActions.timestamp));
 
@@ -1091,7 +1137,10 @@ export const appRouter = router({
             }
           }
         }
-        if (pendingStart) intervals.push({ start: pendingStart, end: now });
+        // Fecha interval pendente respeitando o limite do range (now p/ janela atual,
+        // `to` p/ janela passada — assume bomba foi desligada no fim do range).
+        const rangeEndMs = Math.min(now.getTime(), to.getTime());
+        if (pendingStart) intervals.push({ start: pendingStart, end: new Date(rangeEndMs) });
 
         // Aloca buckets
         type Bucket = { label: string; ts: number; secondsOn: number; cycles: number };
@@ -1116,7 +1165,7 @@ export const appRouter = router({
           return -1;
         }
         function bucketEnd(i: number): number {
-          return i + 1 < buckets.length ? buckets[i + 1].ts : now.getTime() + 1;
+          return i + 1 < buckets.length ? buckets[i + 1].ts : to.getTime();
         }
         for (const iv of intervals) {
           const startMs = iv.start.getTime();
@@ -1138,6 +1187,7 @@ export const appRouter = router({
 
         const result = buckets.map((b) => ({
           label: b.label,
+          ts: b.ts,
           hoursOn: +(b.secondsOn / 3600).toFixed(2),
           kwhEstimado: +((b.secondsOn / 3600) * totalKwPump).toFixed(2),
           cycles: b.cycles,

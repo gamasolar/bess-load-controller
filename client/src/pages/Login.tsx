@@ -123,15 +123,29 @@ export default function Login() {
   return (
     <div className="flex items-center justify-center min-h-screen bg-background p-4">
       <Card className="w-full max-w-md">
-        <CardHeader className="space-y-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Battery className="w-5 h-5 text-primary" />
+        <CardHeader className="space-y-4">
+          {/* Logomarca completa centralizada */}
+          <div className="flex justify-center pt-2">
+            <img
+              src="/logo-full.png"
+              alt="Gama Solar"
+              className="h-14 object-contain"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+                e.currentTarget.nextElementSibling?.classList.remove("hidden");
+              }}
+            />
+            {/* Fallback se logo-full.png não existe ainda */}
+            <div className="hidden flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Battery className="w-5 h-5 text-primary" />
+              </div>
+              <span className="font-bold tracking-tight">GAMA SOLAR</span>
             </div>
-            <div>
-              <CardTitle className="text-lg">BESS Controller</CardTitle>
-              <CardDescription>Sistema de Gerenciamento de Baterias</CardDescription>
-            </div>
+          </div>
+          <div className="text-center">
+            <CardTitle className="text-base">BESS — Sistema de Gerenciamento</CardTitle>
+            <CardDescription>Controle inteligente de baterias e cargas</CardDescription>
           </div>
         </CardHeader>
 

@@ -38,7 +38,7 @@ export const usersRouter = router({
     const all = await listUsers();
     return all.map(u => ({
       id: u.id, openId: u.openId, name: u.name, email: u.email,
-      role: u.role, disabled: u.disabled,
+      role: u.role, disabled: u.disabled, avatarUrl: u.avatarUrl ?? null,
       createdAt: u.createdAt, lastSignedIn: u.lastSignedIn,
     }));
   }),

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
 } from "recharts";
-import { Activity, Clock, Zap, RefreshCcw } from "lucide-react";
+import { Activity, Clock, Zap, RefreshCcw, ArrowLeft } from "lucide-react";
 
 type Range = "day" | "week" | "month" | "year";
 
@@ -26,11 +26,49 @@ export function PumpStatsModal({
   slug: string;
   siteName: string;
 }) {
-  const [range, setRange] = useState<Range>("week");
+  type ViewState = { range: Range; anchor: number | null };
+  const [view, setView] = useState<ViewState>({ range: "week", anchor: null });
+  const [history, setHistory] = useState<ViewState[]>([]);
+  const { range, anchor } = view;
+
   const { data, isLoading, refetch, isFetching } = trpc.bess.pumpStats.useQuery(
-    { slug, range },
-    { enabled: open, refetchInterval: open ? 60_000 : false },
+    { slug, range, anchor: anchor ?? undefined },
+    { enabled: open, refetchInterval: open && anchor === null ? 60_000 : false },
   );
+
+  const canDrillDown = range === "year" || range === "month" || range === "week";
+  const canGoBack = history.length > 0;
+
+  function handleBarClick(p: any) {
+    // Recharts entrega { ...barProps, payload: dataPoint } — ts vem em payload.
+    const ts: number | undefined = p?.payload?.ts ?? p?.ts;
+    if (typeof ts !== "number" || !Number.isFinite(ts)) return;
+    let next: ViewState | null = null;
+    if (range === "year") next = { range: "month", anchor: ts };
+    else if (range === "month" || range === "week") next = { range: "day", anchor: ts };
+    if (!next) return;
+    setHistory((h) => [...h, view]);
+    setView(next);
+  }
+
+  function handleBack() {
+    if (history.length === 0) return;
+    setView(history[history.length - 1]);
+    setHistory((h) => h.slice(0, -1));
+  }
+
+  function handleRangeButton(r: Range) {
+    setHistory([]);
+    setView({ range: r, anchor: null });
+  }
+
+  const contextLabel = (() => {
+    if (anchor === null) return RANGE_LABELS[range];
+    const d = new Date(anchor);
+    if (range === "day") return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+    if (range === "month") return d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+    return RANGE_LABELS[range];
+  })();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -50,11 +88,19 @@ export function PumpStatsModal({
         </DialogHeader>
 
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {canGoBack && (
+              <Button variant="outline" size="sm" onClick={handleBack} className="h-8 gap-1">
+                <ArrowLeft className="w-3.5 h-3.5" /> Voltar
+              </Button>
+            )}
             {(Object.keys(RANGE_LABELS) as Range[]).map((r) => (
               <Button
-                key={r} variant={range === r ? "default" : "outline"} size="sm"
-                onClick={() => setRange(r)} className="h-8"
+                key={r}
+                variant={range === r && anchor === null ? "default" : "outline"}
+                size="sm"
+                onClick={() => handleRangeButton(r)}
+                className="h-8"
               >
                 {RANGE_LABELS[r]}
               </Button>
@@ -63,6 +109,15 @@ export function PumpStatsModal({
           <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching} className="h-8 gap-1.5">
             <RefreshCcw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} /> Atualizar
           </Button>
+        </div>
+
+        <div className="flex items-baseline gap-2 -mt-1">
+          <span className="text-sm font-semibold capitalize">{contextLabel}</span>
+          {canDrillDown && (
+            <span className="text-[10px] text-muted-foreground">
+              · clique numa barra pra abrir {range === "year" ? "o mês" : "o dia"}
+            </span>
+          )}
         </div>
 
         {isLoading ? (
@@ -82,23 +137,30 @@ export function PumpStatsModal({
                 <BarChart data={data.buckets} margin={{ top: 10, right: 10, bottom: 4, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                   <XAxis dataKey="label" stroke="#71717a" fontSize={11} />
-                  <YAxis stroke="#71717a" fontSize={11} unit="h" />
+                  <YAxis stroke="#71717a" fontSize={11} tickFormatter={fmtHours} width={56} />
                   <Tooltip
                     contentStyle={{
                       background: "#0a0a0a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, fontSize: 12,
                     }}
                     formatter={(value: number, name: string) => {
-                      if (name === "hoursOn") return [`${value.toFixed(2)} h`, "Tempo ligada"];
+                      if (name === "hoursOn") return [fmtHours(value), "Tempo ligada"];
                       return [value, name];
                     }}
                   />
-                  <Bar dataKey="hoursOn" fill="#10b981" radius={[3, 3, 0, 0]} />
+                  <Bar
+                    dataKey="hoursOn"
+                    fill="#10b981"
+                    radius={[3, 3, 0, 0]}
+                    cursor={canDrillDown ? "pointer" : "default"}
+                    onClick={canDrillDown ? (p: any) => handleBarClick(p) : undefined}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
             <p className="text-[10px] text-muted-foreground mt-1">
-              Atualiza a cada 60s. <strong>Atenção:</strong> só conta intervalos com TURN_ON e TURN_OFF
+              {anchor === null && "Atualiza a cada 60s. "}
+              <strong>Atenção:</strong> só conta intervalos com TURN_ON e TURN_OFF
               registrados. Antes de 2026-04-26 18:26 (entrada do controle v2) os ligamentos não
               foram auditados, então o gráfico pode mostrar 0 nesse período. Daqui pra frente fica preciso ao segundo.
             </p>
@@ -121,6 +183,7 @@ function SummaryCard({ icon, label, value }: { icon: React.ReactNode; label: str
 }
 
 function fmtHours(h: number): string {
+  if (h <= 0) return "0";
   if (h < 1) return `${Math.round(h * 60)} min`;
   const whole = Math.floor(h);
   const mins = Math.round((h - whole) * 60);

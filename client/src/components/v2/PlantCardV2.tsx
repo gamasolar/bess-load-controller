@@ -17,6 +17,17 @@ import { DecisionPanel } from "./DecisionPanel";
 import { BatteryVisual } from "./BatteryVisual";
 import { ZoneBar } from "./ZoneBar";
 import { PumpStatus } from "./PumpStatus";
+import { useServerClock } from "@/hooks/useServerClock";
+
+function CardClock() {
+  const { date, time } = useServerClock();
+  return (
+    <div className="mt-auto pt-2 border-t border-white/5 font-mono text-[11px] tabular-nums text-muted-foreground flex items-center justify-between">
+      <span>{date}</span>
+      <span>{time}</span>
+    </div>
+  );
+}
 
 function ModeToggle({ slug, mode }: { slug: string; mode: "AUTO" | "MANUAL" }) {
   const utils = trpc.useUtils();
@@ -69,7 +80,14 @@ export function PlantCardV2({ slug }: { slug: string }) {
   useEffect(() => {
     if (!expanded) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setExpanded(false); };
+    // ESC do browser sai do fullscreen sem disparar nosso keydown; sincroniza
+    // expanded=false quando o browser sai sozinho pra evitar overlay CSS órfão
+    // (que sobrepõe a bateria e descoloca a logo).
+    const onFsChange = () => {
+      if (!document.fullscreenElement) setExpanded(false);
+    };
     document.addEventListener("keydown", onKey);
+    document.addEventListener("fullscreenchange", onFsChange);
     // tenta fullscreen API (esconde browser chrome em monitor/TV)
     const elem = wrapperRef.current;
     if (elem && elem.requestFullscreen) {
@@ -77,6 +95,7 @@ export function PlantCardV2({ slug }: { slug: string }) {
     }
     return () => {
       document.removeEventListener("keydown", onKey);
+      document.removeEventListener("fullscreenchange", onFsChange);
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     };
   }, [expanded]);
@@ -132,15 +151,24 @@ export function PlantCardV2({ slug }: { slug: string }) {
       ref={wrapperRef}
       className={
         expanded
-          ? "fixed inset-0 z-50 bg-black/95 overflow-y-auto p-4 md:p-8 flex items-start md:items-center justify-center"
+          ? "fixed inset-0 z-50 bg-black/95 overflow-y-auto p-5 md:p-10 flex items-start md:items-center justify-center"
           : "contents"
       }
     >
+    {/* Logomarca institucional centralizada na borda preta superior (modo TV apenas) */}
+    {expanded && (
+      <img
+        src="/logo-full.png"
+        alt="Gama Solar"
+        className="absolute top-3 md:top-5 left-1/2 -translate-x-1/2 h-5 md:h-7 object-contain opacity-85 z-10 pointer-events-none"
+        onError={(e) => { e.currentTarget.style.display = "none"; }}
+      />
+    )}
     <Card
       className={
         expanded
-          ? "border-white/10 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative w-full max-w-[1600px] md:text-[1.15em]"
-          : "border-white/5 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative"
+          ? "border-white/10 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative w-full max-w-[1550px] md:text-[1.13em] py-0 max-h-full"
+          : "border-white/5 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative py-0 h-full"
       }
     >
       {bgUrl && (
@@ -159,7 +187,7 @@ export function PlantCardV2({ slug }: { slug: string }) {
           <div className="absolute inset-0 bg-gradient-to-br from-card/70 via-card/60 to-card/80 pointer-events-none" />
         </>
       )}
-      <CardContent className={expanded ? "pt-4 px-6 pb-6 md:pt-5 md:px-10 md:pb-10 space-y-5 relative" : "pt-3 px-4 pb-4 md:pt-3.5 md:px-5 md:pb-5 space-y-3 relative"}>
+      <CardContent className={expanded ? "pt-4 px-6 pb-4 md:pt-5 md:px-10 md:pb-5 space-y-5 relative flex flex-col flex-1" : "pt-3 px-4 pb-2.5 md:pt-3.5 md:px-5 md:pb-3 space-y-3 relative flex flex-col flex-1"}>
         {/* Header — esquerda fixada à borda; botões fixados à direita */}
         <div className="flex items-start justify-between gap-4 flex-nowrap">
           <div className="min-w-0 flex-1">
@@ -273,6 +301,8 @@ export function PlantCardV2({ slug }: { slug: string }) {
             </p>
           </div>
         )}
+
+        <CardClock />
       </CardContent>
 
       <AlertDialog open={confirmOpen !== null} onOpenChange={(v) => !v && setConfirmOpen(null)}>

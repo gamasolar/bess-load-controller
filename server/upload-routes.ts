@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import { parse as parseCookieHeader } from "cookie";
 import { COOKIE_NAME } from "@shared/const";
 import { verifySession } from "./auth";
-import { getUserByOpenId, getSiteById, updateSiteById } from "./db";
+import { getUserByOpenId, getSiteById, updateSiteById, getUserById, updateUserMeta } from "./db";
 
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;          // 25 MB pra imagens
 const MAX_VIDEO_BYTES = 1024 * 1024 * 1024;        // 1 GB pra vídeos brutos
@@ -47,6 +47,12 @@ function getStorageRoot(): string {
 
 function sitesDir(): string {
   const dir = path.join(getStorageRoot(), "sites");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function avatarsDir(): string {
+  const dir = path.join(getStorageRoot(), "avatars");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -132,6 +138,36 @@ function backgroundUrlToAbsPath(url: string | null): string | null {
   const filename = url.slice(prefix.length);
   if (filename.includes("/") || filename.includes("..") || filename.includes("\\")) return null;
   return path.join(sitesDir(), filename);
+}
+
+function avatarUrlToAbsPath(url: string | null): string | null {
+  if (!url) return null;
+  const prefix = "/storage/avatars/";
+  if (!url.startsWith(prefix)) return null;
+  const filename = url.slice(prefix.length);
+  if (filename.includes("/") || filename.includes("..") || filename.includes("\\")) return null;
+  return path.join(avatarsDir(), filename);
+}
+
+// Sessão válida (admin OU usuário comum). Retorna { id, role } ou null.
+async function requireAuth(req: Request, res: Response): Promise<{ id: number; role: "user" | "admin" } | null> {
+  try {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) { res.status(401).json({ error: "Sessão ausente" }); return null; }
+    const cookies = parseCookieHeader(cookieHeader);
+    const token = cookies[COOKIE_NAME];
+    if (!token) { res.status(401).json({ error: "Sessão ausente" }); return null; }
+    const payload = await verifySession(token);
+    if (!payload) { res.status(401).json({ error: "Sessão inválida" }); return null; }
+    const user = await getUserByOpenId(payload.openId);
+    if (!user) { res.status(401).json({ error: "Usuário não encontrado" }); return null; }
+    if (user.disabled) { res.status(403).json({ error: "Usuário desativado" }); return null; }
+    return { id: user.id, role: user.role };
+  } catch (e) {
+    console.warn("[Upload] requireAuth err:", e);
+    res.status(500).json({ error: "Falha de autenticação" });
+    return null;
+  }
 }
 
 /**
@@ -270,6 +306,63 @@ export function registerUploadRoutes(app: Express): void {
       }
     },
   );
+
+  // ─── User avatar upload (admin ou self) ───
+  // Usa o mesmo handleMulter; só aceita imagem (vídeo não faz sentido aqui).
+  app.post("/api/users/:id/avatar", handleMulter, async (req, res) => {
+    const auth = await requireAuth(req, res);
+    if (!auth) return;
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: "id inválido" });
+    }
+    if (auth.role !== "admin" && auth.id !== targetId) {
+      return res.status(403).json({ error: "Sem permissão pra editar outro usuário" });
+    }
+    const file = (req as Request & { file?: Express.Multer.File }).file;
+    if (!file) return res.status(400).json({ error: "Arquivo ausente (campo 'file')" });
+    if (!IMAGE_MIMES.has(file.mimetype)) {
+      safeUnlink(file.path);
+      return res.status(400).json({ error: "Avatar precisa ser imagem (JPG/PNG/WebP)" });
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      safeUnlink(file.path);
+      return res.status(413).json({ error: `Imagem excede ${MAX_IMAGE_BYTES / 1024 / 1024} MB` });
+    }
+    const target = await getUserById(targetId);
+    if (!target) {
+      safeUnlink(file.path);
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+    const ext = EXT_BY_MIME[file.mimetype] ?? "bin";
+    const finalFilename = `${crypto.randomUUID()}.${ext}`;
+    const finalAbs = path.join(avatarsDir(), finalFilename);
+    fs.renameSync(file.path, finalAbs);
+    // Cleanup do anterior
+    const oldAbs = avatarUrlToAbsPath(target.avatarUrl ?? null);
+    if (oldAbs && oldAbs !== finalAbs) safeUnlink(oldAbs);
+    const publicUrl = `/storage/avatars/${finalFilename}`;
+    await updateUserMeta(targetId, { avatarUrl: publicUrl });
+    res.json({ avatarUrl: publicUrl });
+  });
+
+  app.delete("/api/users/:id/avatar", async (req, res) => {
+    const auth = await requireAuth(req, res);
+    if (!auth) return;
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: "id inválido" });
+    }
+    if (auth.role !== "admin" && auth.id !== targetId) {
+      return res.status(403).json({ error: "Sem permissão" });
+    }
+    const target = await getUserById(targetId);
+    if (!target) return res.status(404).json({ error: "Usuário não encontrado" });
+    const oldAbs = avatarUrlToAbsPath(target.avatarUrl ?? null);
+    if (oldAbs) safeUnlink(oldAbs);
+    await updateUserMeta(targetId, { avatarUrl: null });
+    res.json({ avatarUrl: null });
+  });
 
   app.delete("/api/admin/sites/:id/background", async (req, res) => {
     const admin = await requireAdmin(req, res);

@@ -1,5 +1,6 @@
 import { eq, desc, and, gte, lte, sql, count, avg, min, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
 import {
   InsertUser, users, userInvitations,
   bessSites, bessReadings, bessEvents, bessAlarms, bessState, bessConfig,
@@ -16,7 +17,16 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const pool = mysql.createPool({
+        uri: process.env.DATABASE_URL,
+        timezone: "Z",
+      });
+      // Force every connection to use UTC so mysql2 receives UTC strings and
+      // returns Date objects with correct epoch ms, regardless of MySQL system TZ.
+      pool.on("connection", (conn) => {
+        conn.query("SET time_zone = '+00:00'");
+      });
+      _db = drizzle(pool);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -780,7 +790,7 @@ export async function getUserById(id: number): Promise<User | null> {
   return rows[0] ?? null;
 }
 
-export async function updateUserMeta(id: number, patch: { name?: string | null; email?: string | null; role?: "user" | "admin"; disabled?: boolean }): Promise<void> {
+export async function updateUserMeta(id: number, patch: { name?: string | null; email?: string | null; role?: "user" | "admin"; disabled?: boolean; avatarUrl?: string | null }): Promise<void> {
   const db = await getDb();
   if (!db) return;
   const set: Record<string, unknown> = {};
@@ -788,6 +798,7 @@ export async function updateUserMeta(id: number, patch: { name?: string | null; 
   if (patch.email !== undefined) set.email = patch.email;
   if (patch.role !== undefined) set.role = patch.role;
   if (patch.disabled !== undefined) set.disabled = patch.disabled;
+  if (patch.avatarUrl !== undefined) set.avatarUrl = patch.avatarUrl;
   if (Object.keys(set).length === 0) return;
   await db.update(users).set(set).where(eq(users.id, id));
 }

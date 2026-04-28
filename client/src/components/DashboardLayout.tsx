@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,7 +18,6 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
-  SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { LOGIN_PATH } from "@/const";
@@ -42,10 +42,25 @@ const adminMenu = [
   { icon: Settings, label: "Configurações", path: "/configuracoes" },
 ];
 
-const SIDEBAR_WIDTH_KEY = "sidebar-width";
-const DEFAULT_WIDTH = 260;
-const MIN_WIDTH = 200;
+const SIDEBAR_WIDTH_KEY = "sidebar-width-v2";
+const DEFAULT_WIDTH = 200;
+const MIN_WIDTH = 180;
 const MAX_WIDTH = 400;
+
+function getInitials(name: string | null | undefined): string {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return parts.slice(0, 3).map((p) => p[0]?.toUpperCase() ?? "").join("");
+}
+
+function getFirstLastName(name: string | null | undefined): string {
+  if (!name) return "—";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "—";
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[parts.length - 1]}`;
+}
 
 export default function DashboardLayout({
   children,
@@ -168,23 +183,30 @@ function DashboardLayoutContent({
     <>
       <div className="relative" ref={sidebarRef}>
         <Sidebar collapsible="icon" className="border-r-0" disableTransition={isResizing}>
-          <SidebarHeader className="h-16 justify-center">
-            <div className="flex items-center gap-3 px-2 transition-all w-full">
-              <button
-                onClick={toggleSidebar}
-                className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-                aria-label="Toggle navigation"
-              >
-                <PanelLeft className="h-4 w-4 text-muted-foreground" />
-              </button>
-              {!isCollapsed ? (
-                <div className="flex items-center gap-2 min-w-0">
-                  <Battery className="h-5 w-5 text-primary shrink-0" />
-                  <span className="font-bold tracking-tight truncate text-sm">
-                    BESS Controller
-                  </span>
+          <SidebarHeader className="h-20 relative justify-center pt-1">
+            {/* Botão minimizar — fixado no canto superior direito */}
+            <button
+              onClick={toggleSidebar}
+              className="absolute top-1.5 right-1.5 h-6 w-6 flex items-center justify-center hover:bg-accent rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring z-10"
+              aria-label={isCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
+              title={isCollapsed ? "Expandir" : "Recolher"}
+            >
+              <PanelLeft className="h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+
+            <div className="flex items-center gap-1.5 px-2 w-full">
+              <img
+                src="/logo.png"
+                alt="Gama Solar"
+                className="h-10 object-contain shrink-0"
+              />
+
+              {!isCollapsed && (
+                <div className="flex flex-col leading-none items-end shrink-0">
+                  <span className="font-bold tracking-tight text-sm">GAMA SOLAR</span>
+                  <span className="text-[9px] uppercase tracking-[0.28em] text-muted-foreground mt-0.5">BESS</span>
                 </div>
-              ) : null}
+              )}
             </div>
           </SidebarHeader>
 
@@ -219,39 +241,43 @@ function DashboardLayoutContent({
               })}
             </SidebarMenu>
 
-            <SidebarSeparator className="my-2" />
-
-            {/* Status indicator */}
-            {!isCollapsed && (
-              <div className="px-4 py-2">
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                  <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                  <span>Sistema operacional</span>
-                </div>
-              </div>
-            )}
           </SidebarContent>
 
-          <SidebarFooter className="p-3">
+          <SidebarFooter className="p-3 gap-2">
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <Avatar className="h-9 w-9 border shrink-0">
-                    <AvatarFallback className="text-xs font-medium bg-primary/10 text-primary">
-                      {user?.name?.charAt(0).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-                    <p className="text-sm font-medium truncate leading-none">
-                      {user?.name || "-"}
-                    </p>
-                    <p className="text-xs text-muted-foreground truncate mt-1.5">
-                      {user?.email || "-"}
-                    </p>
-                  </div>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className="flex items-center gap-2 rounded-md hover:bg-accent/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring px-1 py-1 w-full group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+                        aria-label={`Conta — ${user?.name || ""}`}
+                      >
+                        <Avatar className="h-9 w-9 border shrink-0">
+                          {(user as { avatarUrl?: string | null })?.avatarUrl && (
+                            <AvatarImage src={(user as { avatarUrl?: string | null }).avatarUrl ?? undefined} alt={user?.name ?? ""} />
+                          )}
+                          <AvatarFallback className="text-[11px] font-semibold tracking-wider bg-primary/10 text-primary">
+                            {getInitials(user?.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm font-medium truncate text-left flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
+                          {getFirstLastName(user?.name)}
+                        </span>
+                      </button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" align="end" className="max-w-[240px]">
+                    <p className="font-medium">{user?.name || "—"}</p>
+                    <p className="text-xs text-muted-foreground">{user?.email || ""}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <DropdownMenuContent align="end" side="right" className="w-56">
+                <div className="px-2 py-2 border-b border-white/5 mb-1">
+                  <p className="text-sm font-medium truncate">{user?.name || "—"}</p>
+                  <p className="text-xs text-muted-foreground truncate">{user?.email || ""}</p>
+                </div>
                 <DropdownMenuItem
                   onClick={logout}
                   className="cursor-pointer text-destructive focus:text-destructive"
@@ -261,6 +287,12 @@ function DashboardLayoutContent({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {!isCollapsed && (
+              <div className="flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground">
+                <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                <span>Sistema operacional</span>
+              </div>
+            )}
           </SidebarFooter>
         </Sidebar>
         <div

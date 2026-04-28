@@ -13,11 +13,22 @@ export default function Home() {
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto px-3 md:px-0 py-4">
-      <div>
-        <h1 className="text-xl md:text-2xl font-bold tracking-tight">BESS Load Controller</h1>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Monitoramento e controle das microrredes
-        </p>
+      {/* Header — esquerda: contagem · direita: título alinhado */}
+      <div className="flex items-end justify-between gap-4 pb-3 border-b border-white/5">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="font-mono">
+            {visibleSites.length} {visibleSites.length === 1 ? "usina" : "usinas"} em operação
+          </span>
+        </div>
+        <div className="text-right">
+          <h1 className="text-lg md:text-xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
+            BESS Load Controller
+          </h1>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/70 mt-0.5">
+            Monitoramento e controle das microrredes
+          </p>
+        </div>
       </div>
 
       <AlertBanner />
