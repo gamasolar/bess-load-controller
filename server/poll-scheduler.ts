@@ -116,6 +116,11 @@ export function pickPollInterval(opts: {
   batteryPowerKw?: number | null;
   capacityKwh?: number | null;
   criticalThreshold?: number;
+  // Cooldown ativo: epoch ms até quando o control-engine não pode agir.
+  // Se o cooldown termina antes do intervalo natural, agenda poll pra logo
+  // depois — assim o auto-religa dispara segundos após cooldown abrir.
+  cooldownUntilMs?: number | null;
+  nowMs?: number;
 }): number {
   const parseHHMM = (s: string): number => {
     const parts = s.split(":");
@@ -129,11 +134,24 @@ export function pickPollInterval(opts: {
   const insideWindow = minutesNow >= minLiberacao && minutesNow < minCorte;
   const outsideWindow = !insideWindow;
 
+  // Helper: aplica o cap de cooldown no fim — quando o cooldown termina antes
+  // do intervalo natural, antecipa pro fim do cooldown + 30s de buffer.
+  const COOLDOWN_BUFFER_MIN = 0.5; // 30s — garante que cooldown realmente passou
+  const COOLDOWN_FLOOR_MIN = 0.5;  // não polla mais frequente que 30s
+  const applyCooldownCap = (intervalMin: number): number => {
+    if (opts.cooldownUntilMs == null) return intervalMin;
+    const now = opts.nowMs ?? Date.now();
+    const remainingMin = (opts.cooldownUntilMs - now) / 60_000;
+    if (remainingMin <= 0) return intervalMin;
+    const cooldownPoll = Math.max(COOLDOWN_FLOOR_MIN, remainingMin + COOLDOWN_BUFFER_MIN);
+    return Math.min(intervalMin, cooldownPoll);
+  };
+
   // 1. Fora do horário com bomba OFF → noturno
-  if (outsideWindow && opts.pumpOff) return opts.intervaloNoturno;
+  if (outsideWindow && opts.pumpOff) return applyCooldownCap(opts.intervaloNoturno);
 
   // 2. Zona crítica → crítico (proteção contra blackout)
-  if (opts.socInCriticalZone) return opts.intervaloCritico;
+  if (opts.socInCriticalZone) return applyCooldownCap(opts.intervaloCritico);
 
   // 3. Descarga forte projetada → antecipa pra crítico
   if (
@@ -147,7 +165,7 @@ export function pickPollInterval(opts: {
       intervalMinutes: opts.intervaloPadrao * PROJECTION_HORIZON_FACTOR,
     });
     if (projected !== null && projected <= opts.criticalThreshold) {
-      return opts.intervaloCritico;
+      return applyCooldownCap(opts.intervaloCritico);
     }
   }
 
@@ -167,11 +185,13 @@ export function pickPollInterval(opts: {
     const distancePp = opts.currentSoc - opts.criticalThreshold;
     const rangePp = TRANSITION_UPPER_SOC - opts.criticalThreshold;
     if (distancePp > 0 && rangePp > 0) {
-      return interpolateInterval(distancePp, rangePp, opts.intervaloCritico, baseInterval);
+      return applyCooldownCap(
+        interpolateInterval(distancePp, rangePp, opts.intervaloCritico, baseInterval),
+      );
     }
   }
 
-  return baseInterval;
+  return applyCooldownCap(baseInterval);
 }
 
 /**
@@ -208,6 +228,9 @@ async function pollSite(slug: string): Promise<void> {
         batteryPowerKw: runtime.state.currentBatteryPower ?? null,
         capacityKwh: totalCapacityKwh,
         criticalThreshold: config.socMinDesliga + config.margemZonaCritica,
+        cooldownUntilMs: runtime.state.cooldownUntil
+          ? new Date(runtime.state.cooldownUntil).getTime()
+          : null,
       });
       scheduleNext(slug, intervalMin);
       return;
@@ -281,6 +304,9 @@ async function pollSite(slug: string): Promise<void> {
       batteryPowerKw: stateRef.currentBatteryPower ?? null,
       capacityKwh: totalCapacityKwh,
       criticalThreshold: cfg.socMinDesliga + cfg.margemZonaCritica,
+      cooldownUntilMs: stateRef.cooldownUntil
+        ? new Date(stateRef.cooldownUntil).getTime()
+        : null,
     });
 
     scheduleNext(slug, intervalMin);
@@ -320,7 +346,7 @@ async function watchdog(): Promise<void> {
         pumpOff: runtime.pumpState !== "ON",
         hourMinute: { h: now.getHours(), m: now.getMinutes() },
         horarioLiberacao: cfg.horarioLiberacao,
-      horarioCorte: cfg.horarioCorte,
+        horarioCorte: cfg.horarioCorte,
         intervaloPadrao: cfg.intervaloPadrao,
         intervaloCritico: cfg.intervaloCritico,
         intervaloNoturno: cfg.intervaloNoturno,
@@ -329,6 +355,9 @@ async function watchdog(): Promise<void> {
         batteryPowerKw: runtime.state.currentBatteryPower ?? null,
         capacityKwh: totalCapacityKwh,
         criticalThreshold: cfg.socMinDesliga + cfg.margemZonaCritica,
+        cooldownUntilMs: runtime.state.cooldownUntil
+          ? new Date(runtime.state.cooldownUntil).getTime()
+          : null,
       });
 
       const lastTelemetry = runtime.state.lastTelemetryAt

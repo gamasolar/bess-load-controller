@@ -814,20 +814,28 @@ export const appRouter = router({
           };
         }
 
-        // Cooldown check
+        // Cooldown check — usa cooldownAcao (v2, exposto no modal) e considera
+        // tanto cooldownUntil (gravado pelo control-engine) quanto lastManeuverAt.
         const config = await getBessConfig(site.id);
-        const cooldownMs = (config?.cooldownMinutes ?? 5) * 60 * 1000;
-        if (state?.lastManeuverAt) {
-          const elapsed = Date.now() - new Date(state.lastManeuverAt).getTime();
-          if (elapsed < cooldownMs) {
-            const remaining = Math.ceil((cooldownMs - elapsed) / 1000);
-            return {
-              success: false, wasDuplicate: false,
-              message: `Cooldown ativo. Aguarde ${remaining}s para proteger o contator.`,
-              loadStatus: currentStatus, cooldownRemaining: remaining,
-            };
-          }
+        const cooldownAcaoMin = config?.cooldownAcao ?? 5;
+        const cooldownMs = cooldownAcaoMin * 60 * 1000;
+        const nowMs = Date.now();
+        const lastManeuverEnd = state?.lastManeuverAt
+          ? new Date(state.lastManeuverAt).getTime() + cooldownMs
+          : 0;
+        const cooldownEnd = state?.cooldownUntil
+          ? new Date(state.cooldownUntil).getTime()
+          : 0;
+        const blockedUntil = Math.max(lastManeuverEnd, cooldownEnd);
+        if (blockedUntil > nowMs) {
+          const remaining = Math.ceil((blockedUntil - nowMs) / 1000);
+          return {
+            success: false, wasDuplicate: false,
+            message: `Cooldown ativo. Aguarde ${remaining}s para proteger o contator.`,
+            loadStatus: currentStatus, cooldownRemaining: remaining,
+          };
         }
+        const cooldownUntilNew = new Date(nowMs + cooldownMs);
 
         // Manual mode: send MQTT if topic is configured, otherwise just register
         if (site.controlMode === "manual") {
@@ -843,6 +851,7 @@ export const appRouter = router({
           await upsertBessState(site.id, {
             loadStatus: input.action,
             lastManeuverAt: new Date(),
+            cooldownUntil: cooldownUntilNew,
             lastDecision: mqttManualResult
               ? `Comando manual MQTT: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} — ${mqttManualResult.message}`
               : `Comando manual registrado: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"}. (Sem MQTT — atuação local necessária)`,
@@ -867,6 +876,9 @@ export const appRouter = router({
               userEmail: ctx.user?.email ?? null,
             },
           });
+          // Força fetch FusionSolar imediato + reavaliação. Como cooldownUntil
+          // foi gravado, o próximo poll respeita e agenda re-eval pra logo após.
+          triggerSitePoll(input.slug);
           return {
             success: mqttManualResult ? mqttManualResult.success : true,
             wasDuplicate: false,
@@ -890,6 +902,7 @@ export const appRouter = router({
         await upsertBessState(site.id, {
           loadStatus: input.action,
           lastManeuverAt: new Date(),
+          cooldownUntil: cooldownUntilNew,
           lastDecision: mqttResult
             ? `Comando MQTT: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} — ${mqttResult.message}`
             : `Comando manual: Carga ${input.action === "on" ? "LIGADA" : "DESLIGADA"} pelo operador (MQTT não configurado).`,
@@ -916,6 +929,9 @@ export const appRouter = router({
         });
 
         const cmdSuccess = mqttResult ? mqttResult.success : true;
+        // Força fetch FusionSolar imediato + reavaliação. Como cooldownUntil
+        // foi gravado, o próximo poll respeita e agenda re-eval pra logo após.
+        triggerSitePoll(input.slug);
         return {
           success: cmdSuccess, wasDuplicate: false,
           message: mqttResult
