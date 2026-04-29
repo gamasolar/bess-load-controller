@@ -143,6 +143,9 @@ export const bessState = mysqlTable("bess_state", {
   sonoffPower: mysqlEnum("sonoffPower", ["ON", "OFF", "UNKNOWN"]).default("UNKNOWN").notNull(),
   lastTelemetryAt: timestamp("lastTelemetryAt"),  // Last time SOC was updated from real FusionSolar data
   socSource: mysqlEnum("socSource", ["fusionsolar", "manual", "simulation", "unknown"]).default("unknown").notNull(),
+  // ─── Load monitor (saúde da bomba) ───
+  loadHealth: varchar("loadHealth", { length: 16 }),
+  loadFailureSince: timestamp("loadFailureSince"),
   // ─── MVP v2: SOC estimation (Coulomb counting) + cooldown + pump runtime ───
   socEstimated: float("socEstimated"),
   lastEstimateAt: timestamp("lastEstimateAt"),

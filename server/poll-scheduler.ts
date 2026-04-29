@@ -15,11 +15,12 @@
  */
 
 import { eq } from "drizzle-orm";
-import { getDb } from "./db";
+import { getDb, addAlarm, closeAlarmsByType } from "./db";
 import { bessSites, bessReadings, bessState } from "../drizzle/schema";
 import { getFusionSolarClient, isFusionSolarConfigured } from "./fusionsolar";
 import { evaluateAndAct } from "./control-engine";
 import { getSiteRuntimeState } from "./control-engine";
+import { evaluateLoadHealth } from "./load-monitor";
 
 const DELAY_BETWEEN_SITES_MS = 15_000; // respeitar rate limit Northbound (10s+)
 const WATCHDOG_PERIOD_MS = 30_000;     // re-avalia intervalo correto a cada 30s
@@ -251,32 +252,105 @@ async function pollSite(slug: string): Promise<void> {
       return;
     }
 
+    let inverterDevIdStr = "";
+    if (site.fusionsolarInverterIds) {
+      try {
+        const invIds = JSON.parse(site.fusionsolarInverterIds);
+        inverterDevIdStr = Array.isArray(invIds) ? invIds.join(",") : String(invIds);
+      } catch {
+        inverterDevIdStr = "";
+      }
+    }
+
     const client = getFusionSolarClient();
     const battery = await client.getBatteryRealKpi(batteryDevIdStr, 41, site.id);
+    const inverter = inverterDevIdStr
+      ? await client.getInverterRealKpi(inverterDevIdStr, 1)
+      : null;
 
     const db = await getDb();
     if (battery && battery.battery_soc != null && db) {
       const soc = battery.battery_soc;
+      const battPower = battery.battery_power ?? null;
+      const pvPower = inverter?.active_power ?? null;
+      const battDischarge = battPower != null && battPower < 0 ? Math.abs(battPower) : 0;
+      const battCharge = battPower != null && battPower > 0 ? battPower : 0;
+      const loadPower = pvPower != null
+        ? Math.max(0, pvPower + battDischarge - battCharge)
+        : null;
+
       await db.insert(bessReadings).values({
         siteId: site.id,
         soc,
         soh: battery.battery_soh ?? null,
-        batteryPower: battery.battery_power ?? null,
+        batteryPower: battPower,
         batteryTemperature: battery.battery_temperature ?? null,
         busVoltage: battery.bus_voltage ?? null,
+        pvPower,
+        loadPower,
         valid: true,
       });
 
       await db.update(bessState).set({
         currentSoc: soc,
         currentSoh: battery.battery_soh ?? null,
-        currentBatteryPower: battery.battery_power ?? null,
+        currentBatteryPower: battPower,
         currentTemperature: battery.battery_temperature ?? null,
+        currentPvPower: pvPower,
+        currentLoadPower: loadPower,
         lastTelemetryAt: new Date(),
         socSource: "fusionsolar",
       }).where(eq(bessState.siteId, site.id));
 
-      console.log(`[PollScheduler] ${slug}: SOC=${soc.toFixed(1)}%`);
+      console.log(
+        `[PollScheduler] ${slug}: SOC=${soc.toFixed(1)}%` +
+        (battPower != null ? ` Bat=${battPower.toFixed(2)}kW` : "") +
+        (pvPower != null ? ` PV=${pvPower.toFixed(2)}kW` : "") +
+        (loadPower != null ? ` Load=${loadPower.toFixed(2)}kW` : "")
+      );
+
+      // Load monitor — observação passiva, não muda estado de bomba
+      try {
+        const fresh = await getSiteRuntimeState(slug);
+        if (fresh && process.env.LOAD_MONITOR_ENABLED === "true") {
+          const decision = evaluateLoadHealth({
+            state: fresh.state,
+            pumpPowerCv: site.pumpPowerCv ?? 30,
+            pumpCount: site.pumpCount ?? 1,
+            thresholdOverrideKw: process.env.LOAD_MIN_KW_OK
+              ? Number(process.env.LOAD_MIN_KW_OK)
+              : undefined,
+          });
+
+          await db.update(bessState).set({
+            loadHealth: decision.health,
+            loadFailureSince: decision.nextFailureSince,
+          }).where(eq(bessState.siteId, site.id));
+
+          const shadow = process.env.LOAD_MONITOR_SHADOW === "true";
+          if (shadow) {
+            console.log(
+              `[load-monitor:shadow] ${slug} health=${decision.health}` +
+              ` cmd=${fresh.state.loadStatus} sonoff=${fresh.state.sonoffPower}` +
+              ` load=${loadPower?.toFixed(2) ?? "null"}kW` +
+              ` bat=${battPower?.toFixed(2) ?? "null"}kW pv=${pvPower?.toFixed(2) ?? "null"}kW`
+            );
+          } else {
+            if (decision.health === "FAILED") {
+              await addAlarm(
+                site.id,
+                "WARNING",
+                "LOAD_FAILURE",
+                `Comando ON sem consumo detectado (carga ${loadPower?.toFixed(1) ?? "?"}kW). Verificar softstarter/motor.`,
+              );
+            } else if (decision.health === "RUNNING_OK" || decision.health === "OFF_OK") {
+              await closeAlarmsByType("LOAD_FAILURE", site.id);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[load-monitor] ${slug}: erro não-fatal —`, err);
+      }
     } else {
       console.warn(`[PollScheduler] ${slug}: getBatteryRealKpi retornou vazio`);
     }

@@ -789,6 +789,7 @@ export const appRouter = router({
             pumpState: runtime.pumpState,
             inCriticalZone: runtime.inCriticalZone,
             cooldownRemainingMs,
+            loadHealth: runtime.state.loadHealth ?? "UNKNOWN",
           },
           nextAction: decision,
         };
