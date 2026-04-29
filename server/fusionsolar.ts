@@ -393,9 +393,12 @@ class FusionSolarClient {
       const dataItemMap = deviceData?.dataItemMap ?? {};
 
       // LUNA2000-215kWh não retorna battery_power; usa ch_discharge_power em watts
-      // (negativo=descarga, positivo=carga — mesma convenção). Convertemos pra kW.
+      // com convenção INVERTIDA do código (positivo=descarga). Validado empiricamente
+      // 2026-04-29: 10 amostras consecutivas com SOC caindo 94→69 e ch_discharge_power
+      // sempre positivo (0.255 a 52 kW). Invertemos o sinal pra bater com a convenção
+      // interna `batteryPower < 0 = descarga` (poll-scheduler.ts:159, routers.ts:1478).
       const rawPower = dataItemMap.battery_power ?? (
-        dataItemMap.ch_discharge_power != null ? Number(dataItemMap.ch_discharge_power) / 1000 : undefined
+        dataItemMap.ch_discharge_power != null ? -Number(dataItemMap.ch_discharge_power) / 1000 : undefined
       );
 
       return {
