@@ -264,6 +264,11 @@ async function pollSite(slug: string): Promise<void> {
 
     const client = getFusionSolarClient();
     const battery = await client.getBatteryRealKpi(batteryDevIdStr, 41, site.id);
+    // Huawei /getDevRealKpi exige ~5s entre chamadas. Sem isso, a 2ª (inversor)
+    // sempre toma 407 — bateria consome a janela e inversor cai imediatamente.
+    if (inverterDevIdStr) {
+      await new Promise((r) => setTimeout(r, 5000));
+    }
     const inverter = inverterDevIdStr
       ? await client.getInverterRealKpi(inverterDevIdStr, 1)
       : null;

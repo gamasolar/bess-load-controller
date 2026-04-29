@@ -119,6 +119,26 @@ export function decideAction(state: SiteRuntimeState, now: Date): Decision {
     return { kind: "NONE", reason: "Modo MANUAL — sem ação automática" };
   }
 
+  // Projeção SOC — antecipa TURN_OFF baseado na taxa de descarga atual.
+  // Horizonte = 2× próximo poll (cobre 1 poll perdido por rate-limit ou jitter).
+  // Margem +1pp absorve não-linearidade do BMS em SOC baixo (incidente 19:35-19:40
+  // de 2026-04-29: SOC saltou 23→18 em 2min, overshoot 4pp do socMinDesliga).
+  const SAFETY_MARGIN_PP = 1;
+  const battPower = state.state.currentBatteryPower;
+  if (pumpState === "ON" && battPower != null && battPower < 0) {
+    const nextPollMin = state.inCriticalZone ? config.intervaloCritico : config.intervaloPadrao;
+    const horizonMin = nextPollMin * 2;
+    const capacityKwh = (state.site.bessCapacityKwh ?? 215) * (state.site.bessCount ?? 1);
+    const projectedSoc = soc + (battPower * horizonMin / 60) / capacityKwh * 100;
+    const effectiveThreshold = config.socMinDesliga + SAFETY_MARGIN_PP;
+    if (projectedSoc <= effectiveThreshold) {
+      return {
+        kind: "TURN_OFF",
+        reason: `Projeção: SOC ${projectedSoc.toFixed(1)}% em ${horizonMin}min <= ${effectiveThreshold}% (socMinDesliga ${config.socMinDesliga} + margem ${SAFETY_MARGIN_PP}). Descarga atual: ${battPower.toFixed(1)}kW.`,
+      };
+    }
+  }
+
   if (pumpState === "ON" && soc <= config.socMinDesliga) {
     return { kind: "TURN_OFF", reason: `AUTO desliga: SOC ${soc.toFixed(1)}% <= socMinDesliga ${config.socMinDesliga}%` };
   }
