@@ -63,6 +63,8 @@ export const bessSites = mysqlTable("bess_sites", {
   fusionsolarPlantCode: varchar("fusionsolarPlantCode", { length: 64 }),
   // Optional background image (uploaded by admin, served via /storage)
   backgroundUrl: varchar("backgroundUrl", { length: 512 }),
+  // Customização visual do card por-site (motorPreset, futuros: bgColor, layout, etc.)
+  cardCustomization: json("cardCustomization"),
   // Coordenadas da usina (pra clima, mapa, etc.)
   lat: float("lat"),
   lng: float("lng"),

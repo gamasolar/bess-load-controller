@@ -15,6 +15,8 @@ import { PumpStatsModal } from "./PumpStatsModal";
 import { WeatherWidget } from "./WeatherWidget";
 import { DecisionPanel } from "./DecisionPanel";
 import { BatteryVisual } from "./BatteryVisual";
+import { MotorPresetView, type MotorPreset } from "./motor-presets";
+import type { LoadHealth } from "./motor-presets/shared";
 import { ZoneBar } from "./ZoneBar";
 import { PumpStatus } from "./PumpStatus";
 import { useServerClock } from "@/hooks/useServerClock";
@@ -257,17 +259,28 @@ export function PlantCardV2({ slug }: { slug: string }) {
           </div>
         </div>
 
-        {/* Battery centralizada (padrão único — desktop, tablet e mobile) */}
+        {/* Bateria + Motor lado a lado (padrão único — desktop, tablet e mobile) */}
         <div className="flex flex-col items-center gap-3">
-          <BatteryVisual
-            soc={socForDisplay}
-            socSource={s.derived.socSource as "REAL" | "ESTIMATED" | null}
-            zones={zones}
-            batteryPower={typeof s.state.currentBatteryPower === "number" ? s.state.currentBatteryPower : null}
-            lastTelemetryAt={s.state.lastTelemetryAt as Date | string | null}
-          />
+          <div className="flex flex-row items-start justify-center gap-6 md:gap-8">
+            <BatteryVisual
+              soc={socForDisplay}
+              socSource={s.derived.socSource as "REAL" | "ESTIMATED" | null}
+              zones={zones}
+              batteryPower={typeof s.state.currentBatteryPower === "number" ? s.state.currentBatteryPower : null}
+              lastTelemetryAt={s.state.lastTelemetryAt as Date | string | null}
+            />
+            <MotorPresetView
+              preset={(s.site as any).cardCustomization?.motorPreset as MotorPreset | undefined}
+              loadHealth={(s.derived.loadHealth ?? "UNKNOWN") as LoadHealth}
+              loadPower={typeof s.state.currentLoadPower === "number" ? s.state.currentLoadPower : null}
+              loadFailureSince={(s.state as any).loadFailureSince ?? null}
+              loadHistory={(s.derived as any).recentLoadPower ?? []}
+              pumpPowerCv={(s.site as any).pumpPowerCv ?? 30}
+              pumpCount={(s.site as any).pumpCount ?? 1}
+            />
+          </div>
 
-          {/* Zones + decisão ocupam toda a largura abaixo da bateria */}
+          {/* Zones + decisão ocupam toda a largura abaixo */}
           <div className="w-full space-y-2.5">
             <ZoneBar soc={socForDisplay} zones={zones} />
             <DecisionPanel s={s} />

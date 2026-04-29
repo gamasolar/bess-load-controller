@@ -3,7 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { publicProcedure, adminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { eq, desc, and, gte, lt, inArray, asc } from "drizzle-orm";
-import { bessActions, bessConfig as bessConfigTable, bessState } from "../drizzle/schema";
+import { bessActions, bessConfig as bessConfigTable, bessState, bessReadings } from "../drizzle/schema";
 import { usersRouter, invitationsRouter, sitesRouter, whatsappRouter, systemAdminEndpoints } from "./admin-routes";
 import { triggerSitePoll } from "./poll-scheduler";
 import {
@@ -743,6 +743,24 @@ export const appRouter = router({
         const cooldownRemainingMs = runtime.state.cooldownUntil
           ? Math.max(0, runtime.state.cooldownUntil.getTime() - Date.now())
           : 0;
+
+        // Últimas 12 leituras de loadPower (pra sparkline). Cheap query, usa só pelo slug atual.
+        let recentLoadPower: number[] = [];
+        try {
+          const db = await getDb();
+          if (db) {
+            const recent = await db.select({ loadPower: bessReadings.loadPower })
+              .from(bessReadings)
+              .where(eq(bessReadings.siteId, runtime.site.id))
+              .orderBy(desc(bessReadings.createdAt))
+              .limit(12);
+            recentLoadPower = recent
+              .map(r => r.loadPower)
+              .filter((v): v is number => v != null)
+              .reverse();
+          }
+        } catch { /* swallow — sparkline opcional */ }
+
         return {
           site: {
             id: runtime.site.id,
@@ -751,6 +769,9 @@ export const appRouter = router({
             mqttTopic: runtime.site.mqttTopic,
             fusionsolarConfigured: !!(runtime.site.fusionsolarDeviceIds && runtime.site.fusionsolarPlantCode),
             backgroundUrl: runtime.site.backgroundUrl ?? null,
+            cardCustomization: runtime.site.cardCustomization ?? null,
+            pumpPowerCv: runtime.site.pumpPowerCv ?? 30,
+            pumpCount: runtime.site.pumpCount ?? 1,
           },
           config: {
             socMinDesliga: runtime.config.socMinDesliga,
@@ -774,6 +795,8 @@ export const appRouter = router({
             mqttConnected: runtime.state.mqttConnected,
             currentSoc: runtime.state.currentSoc,
             currentBatteryPower: runtime.state.currentBatteryPower,
+            currentLoadPower: runtime.state.currentLoadPower,
+            currentPvPower: runtime.state.currentPvPower,
             currentTemperature: runtime.state.currentTemperature,
             healthStatus: runtime.state.healthStatus,
             lastDecision: runtime.state.lastDecision,
@@ -781,6 +804,7 @@ export const appRouter = router({
             cooldownUntil: runtime.state.cooldownUntil,
             pumpOnSinceTimestamp: runtime.state.pumpOnSinceTimestamp,
             pumpOnSecondsToday: runtime.state.pumpOnSecondsToday,
+            loadFailureSince: runtime.state.loadFailureSince,
           },
           derived: {
             soc: runtime.soc,
@@ -790,6 +814,7 @@ export const appRouter = router({
             inCriticalZone: runtime.inCriticalZone,
             cooldownRemainingMs,
             loadHealth: runtime.state.loadHealth ?? "UNKNOWN",
+            recentLoadPower,
           },
           nextAction: decision,
         };

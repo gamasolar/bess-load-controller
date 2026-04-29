@@ -215,6 +215,7 @@ export const sitesRouter = router({
       fusionsolarDeviceIds: s.fusionsolarDeviceIds ?? "",
       fusionsolarInverterIds: s.fusionsolarInverterIds ?? "",
       backgroundUrl: s.backgroundUrl ?? null,
+      cardCustomization: s.cardCustomization ?? null,
       lat: s.lat ?? null,
       lng: s.lng ?? null,
       isActive: !!s.isActive,
@@ -239,6 +240,7 @@ export const sitesRouter = router({
       fusionsolarInverterIds: z.string().max(2000).optional(),
       lat: z.number().min(-90).max(90).nullable().optional(),
       lng: z.number().min(-180).max(180).nullable().optional(),
+      cardCustomization: z.record(z.string(), z.any()).nullable().optional(),
     }))
     .mutation(async ({ input }) => {
       const { id, ...patch } = input;

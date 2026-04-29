@@ -54,7 +54,7 @@ export function PumpStatus({
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Bomba</p>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Comando da Bomba</p>
         <p
           className={`text-2xl font-bold leading-tight tracking-tight ${
             unknown ? "text-zinc-500" : isOn ? "text-emerald-300" : "text-zinc-400"

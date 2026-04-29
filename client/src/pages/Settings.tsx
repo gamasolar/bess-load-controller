@@ -2,15 +2,16 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Users, Cog, MessageSquare, Battery } from "lucide-react";
+import { Users, Cog, MessageSquare, Battery, Palette } from "lucide-react";
 import { UsersTab } from "@/components/settings/UsersTab";
 import { SystemTab } from "@/components/settings/SystemTab";
 import { WhatsappTab } from "@/components/settings/WhatsappTab";
 import { SitesTab } from "@/components/settings/SitesTab";
+import { PersonalizacaoTab } from "@/components/settings/PersonalizacaoTab";
 
 export default function Settings() {
   const { isAdmin, loading } = useAuth();
-  const [tab, setTab] = useState<"users" | "sites" | "system" | "whatsapp">("users");
+  const [tab, setTab] = useState<"users" | "sites" | "personalizacao" | "system" | "whatsapp">("users");
 
   if (loading) {
     return (
@@ -45,12 +46,15 @@ export default function Settings() {
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="w-full">
-        <TabsList className="grid w-full grid-cols-4 max-w-xl">
+        <TabsList className="grid w-full grid-cols-5 max-w-2xl">
           <TabsTrigger value="users" className="gap-1.5">
             <Users className="w-3.5 h-3.5" /> Usuários
           </TabsTrigger>
           <TabsTrigger value="sites" className="gap-1.5">
             <Battery className="w-3.5 h-3.5" /> Sites
+          </TabsTrigger>
+          <TabsTrigger value="personalizacao" className="gap-1.5">
+            <Palette className="w-3.5 h-3.5" /> Personalização
           </TabsTrigger>
           <TabsTrigger value="system" className="gap-1.5">
             <Cog className="w-3.5 h-3.5" /> Sistema
@@ -65,6 +69,9 @@ export default function Settings() {
         </TabsContent>
         <TabsContent value="sites" className="mt-5">
           <SitesTab />
+        </TabsContent>
+        <TabsContent value="personalizacao" className="mt-5">
+          <PersonalizacaoTab />
         </TabsContent>
         <TabsContent value="system" className="mt-5">
           <SystemTab />
