@@ -465,7 +465,28 @@ async function sweepDivergenceAutoClose() {
                         (expectedLoad === "off" && realPower === "OFF");
       if (converged) {
         await closeAlarmsByType("DIVERGENCE", site.id);
+        continue;
       }
+      // Divergente estável: reconcilia loadStatus ← sonoffPower (Sonoff é a verdade física).
+      // Só toca se não há cooldown ativo e a última manobra foi há >60s — evita race
+      // com applyDecision recém-escrito ou com a janela de propagação do MQTT.
+      const now = Date.now();
+      const inCooldown = fresh.cooldownUntil
+        ? new Date(fresh.cooldownUntil).getTime() > now
+        : false;
+      const recentManeuver = fresh.lastManeuverAt
+        ? now - new Date(fresh.lastManeuverAt).getTime() < 60_000
+        : false;
+      if (inCooldown || recentManeuver) continue;
+      const reconciled = realPower === "ON" ? "on" : "off";
+      console.warn(`[MqttSync] RECONCILIANDO ${site.slug}: loadStatus ${expectedLoad}→${reconciled} (Sonoff=${realPower} estável)`);
+      await upsertBessState(site.id, {
+        loadStatus: reconciled,
+        lastDecision: `Reconciliado: loadStatus ${expectedLoad}→${reconciled} (Sonoff=${realPower} estável)`,
+      });
+      await addEvent(site.id, "RECONCILE",
+        `loadStatus ${expectedLoad}→${reconciled} (Sonoff reportava ${realPower} de forma estável).`);
+      // Não fecha o alarme aqui — próximo sweep verá converged e fechará.
     }
   } catch (e) {
     console.warn("[MqttSync] sweepDivergenceAutoClose erro:", e);
