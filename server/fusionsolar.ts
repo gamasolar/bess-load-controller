@@ -391,11 +391,17 @@ class FusionSolarClient {
 
       const deviceData = data[0];
       const dataItemMap = deviceData?.dataItemMap ?? {};
-      
+
+      // LUNA2000-215kWh não retorna battery_power; usa ch_discharge_power em watts
+      // (negativo=descarga, positivo=carga — mesma convenção). Convertemos pra kW.
+      const rawPower = dataItemMap.battery_power ?? (
+        dataItemMap.ch_discharge_power != null ? Number(dataItemMap.ch_discharge_power) / 1000 : undefined
+      );
+
       return {
         battery_soc: dataItemMap.battery_soc != null ? Number(dataItemMap.battery_soc) : undefined,
         battery_soh: dataItemMap.battery_soh != null ? Number(dataItemMap.battery_soh) : undefined,
-        battery_power: dataItemMap.battery_power != null ? Number(dataItemMap.battery_power) : undefined,
+        battery_power: rawPower != null ? Number(rawPower) : undefined,
         battery_temperature: dataItemMap.battery_temperature != null ? Number(dataItemMap.battery_temperature) : undefined,
         bus_voltage: dataItemMap.bus_voltage != null ? Number(dataItemMap.bus_voltage) : undefined,
         max_charge_power: dataItemMap.max_charge_power != null ? Number(dataItemMap.max_charge_power) : undefined,
