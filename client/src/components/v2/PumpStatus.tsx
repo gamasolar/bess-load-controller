@@ -54,16 +54,16 @@ export function PumpStatus({
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Comando da Bomba</p>
+        <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Comando da Bomba</p>
         <p
-          className={`text-2xl font-bold leading-tight tracking-tight ${
+          className={`text-base font-bold leading-tight tracking-tight ${
             unknown ? "text-zinc-500" : isOn ? "text-emerald-300" : "text-zinc-400"
           }`}
         >
           {noHardware ? "—" : unknown ? "DESCONHECIDO" : isOn ? "LIGADA" : "DESLIGADA"}
         </p>
         {cooldownActive && (
-          <p className="text-[11px] text-amber-400 mt-0.5">
+          <p className="text-[10px] text-amber-400 mt-0.5">
             ⏱ Cooldown {Math.ceil(cooldownRemainingMs / 1000)}s
           </p>
         )}
@@ -72,12 +72,12 @@ export function PumpStatus({
       {!noHardware && !readOnly && (
         <Button
           variant={isOn ? "outline" : "default"}
-          size="lg"
-          className="min-h-[56px] min-w-[120px] text-base font-semibold"
+          size="sm"
+          className="min-h-[36px] min-w-[88px] text-xs font-semibold"
           disabled={busy || cooldownActive}
           onClick={onToggle}
         >
-          <Power className="w-5 h-5 mr-2" />
+          <Power className="w-3.5 h-3.5 mr-1.5" />
           {isOn ? "Desligar" : "Ligar"}
         </Button>
       )}

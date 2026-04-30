@@ -1,19 +1,24 @@
 import { AlertTriangle, HelpCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { colorsFor, captionFor, durationMinFromSince, type MotorPresetProps } from "./shared";
+import { colorsFor, captionFor, durationMinFromSince, formatAgeLabel, type MotorPresetProps } from "./shared";
 
 // Preset E — Impeller (vista frontal do impulsor da bomba centrífuga, original).
-export function MotorImpeller({ loadHealth, loadPower, loadFailureSince }: MotorPresetProps) {
+export function MotorImpeller({ loadHealth, loadPower, loadFailureSince, lastTelemetryAt }: MotorPresetProps) {
   const c = colorsFor(loadHealth);
   const isUnknown = loadHealth === "UNKNOWN";
   const failureSinceMs = loadFailureSince ? new Date(loadFailureSince).getTime() : null;
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
     if (loadHealth !== "VERIFYING" && loadHealth !== "FAILED") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [loadHealth]);
+  const ageLabel = formatAgeLabel(lastTelemetryAt, now);
 
   const durationMin = durationMinFromSince(loadFailureSince, now);
   const loadLabel = loadPower == null ? "—" : loadPower < 1 ? `${loadPower.toFixed(2)} kW` : `${loadPower.toFixed(1)} kW`;
@@ -82,6 +87,7 @@ export function MotorImpeller({ loadHealth, loadPower, loadFailureSince }: Motor
       <div className="flex flex-col items-center gap-0.5">
         <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
         {subCaption && <span className={`text-[10px] ${c.text}`}>{subCaption}</span>}
+        {ageLabel && <span className="text-[10px] text-muted-foreground">{ageLabel}</span>}
       </div>
     </div>
   );

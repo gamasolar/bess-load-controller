@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
-import { colorsFor, captionFor, durationMinFromSince, type MotorPresetProps } from "./shared";
+import { colorsFor, captionFor, durationMinFromSince, formatAgeLabel, type MotorPresetProps } from "./shared";
 
 // Preset C — Sparkline (mini bar chart das últimas N leituras de loadPower).
-export function MotorSparkline({ loadHealth, loadPower, loadFailureSince, loadHistory = [] }: MotorPresetProps) {
+export function MotorSparkline({ loadHealth, loadPower, loadFailureSince, loadHistory = [], lastTelemetryAt }: MotorPresetProps) {
   const c = colorsFor(loadHealth);
   const failureSinceMs = loadFailureSince ? new Date(loadFailureSince).getTime() : null;
 
   const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
   useEffect(() => {
     if (loadHealth !== "VERIFYING" && loadHealth !== "FAILED") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [loadHealth]);
   const durationMin = durationMinFromSince(loadFailureSince, now);
+  const ageLabel = formatAgeLabel(lastTelemetryAt, now);
 
   // Histórico real (do prop). Inclui o valor atual no fim. Se loadHistory está vazio, mostra só o atual.
   const history = loadHistory.length > 0
@@ -42,7 +47,10 @@ export function MotorSparkline({ loadHealth, loadPower, loadFailureSince, loadHi
           )}
         </div>
       </div>
-      <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
+      <div className="flex flex-col items-center gap-0.5">
+        <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
+        {ageLabel && <span className="text-[10px] text-muted-foreground">{ageLabel}</span>}
+      </div>
     </div>
   );
 }

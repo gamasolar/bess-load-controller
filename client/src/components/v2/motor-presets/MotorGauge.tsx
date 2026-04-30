@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { colorsFor, captionFor, durationMinFromSince, maxKwFor, type MotorPresetProps } from "./shared";
+import { colorsFor, captionFor, durationMinFromSince, formatAgeLabel, maxKwFor, type MotorPresetProps } from "./shared";
 
 // Preset G — Gauge industrial moderno (gradiente, halo, glass effect).
-export function MotorGauge({ loadHealth, loadPower, loadFailureSince, pumpPowerCv = 30, pumpCount = 1 }: MotorPresetProps) {
+export function MotorGauge({ loadHealth, loadPower, loadFailureSince, pumpPowerCv = 30, pumpCount = 1, lastTelemetryAt }: MotorPresetProps) {
   const c = colorsFor(loadHealth);
   const maxKw = maxKwFor(pumpPowerCv, pumpCount);
   const lp = loadPower ?? 0;
@@ -18,11 +18,16 @@ export function MotorGauge({ loadHealth, loadPower, loadFailureSince, pumpPowerC
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
     if (loadHealth !== "VERIFYING" && loadHealth !== "FAILED") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [loadHealth]);
   const durationMin = durationMinFromSince(loadFailureSince, now);
+  const ageLabel = formatAgeLabel(lastTelemetryAt, now);
   const loadLabel = loadPower == null ? "—" : (loadPower < 10 ? loadPower.toFixed(1) : loadPower.toFixed(0));
 
   return (
@@ -68,7 +73,10 @@ export function MotorGauge({ loadHealth, loadPower, loadFailureSince, pumpPowerC
           <text x="70" y="222" textAnchor="middle" fontSize="10" fill="#a1a1aa" letterSpacing="0.1em">kW</text>
         </svg>
       </div>
-      <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
+      <div className="flex flex-col items-center gap-0.5">
+        <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
+        {ageLabel && <span className="text-[10px] text-muted-foreground">{ageLabel}</span>}
+      </div>
     </div>
   );
 }

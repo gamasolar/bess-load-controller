@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
-import { colorsFor, captionFor, durationMinFromSince, type MotorPresetProps } from "./shared";
+import { colorsFor, captionFor, durationMinFromSince, formatAgeLabel, type MotorPresetProps } from "./shared";
 
 // Preset I — Esquema P&ID animado (engineering drawing).
-export function MotorPID({ loadHealth, loadPower, loadFailureSince }: MotorPresetProps) {
+export function MotorPID({ loadHealth, loadPower, loadFailureSince, lastTelemetryAt }: MotorPresetProps) {
   const c = colorsFor(loadHealth);
   const isFlowing = loadHealth === "RUNNING_OK";
 
   const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
   useEffect(() => {
     if (loadHealth !== "VERIFYING" && loadHealth !== "FAILED") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [loadHealth]);
   const durationMin = durationMinFromSince(loadFailureSince, now);
+  const ageLabel = formatAgeLabel(lastTelemetryAt, now);
 
   return (
     <div className="flex flex-col items-center gap-2 select-none">
@@ -62,7 +67,10 @@ export function MotorPID({ loadHealth, loadPower, loadFailureSince }: MotorPrese
           </text>
         </svg>
       </div>
-      <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
+      <div className="flex flex-col items-center gap-0.5">
+        <span className={`text-[10px] uppercase tracking-wider font-mono ${c.text}`}>{captionFor(loadHealth, durationMin)}</span>
+        {ageLabel && <span className="text-[10px] text-muted-foreground">{ageLabel}</span>}
+      </div>
     </div>
   );
 }

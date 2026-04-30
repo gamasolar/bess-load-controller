@@ -177,7 +177,7 @@ export function BatteryVisual({
                 socSource === "ESTIMATED" ? "text-yellow-500" : "text-emerald-500"
               }`}
             >
-              {socSource === "ESTIMATED" ? "Estimado · Coulomb" : "Real · FusionSolar"}
+              {socSource === "ESTIMATED" ? "Coulomb" : "FusionSolar"}
             </span>
             <span className="text-[10px] text-muted-foreground">há {ageLabel}</span>
           </>
