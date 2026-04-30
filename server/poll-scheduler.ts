@@ -284,18 +284,8 @@ async function pollSite(slug: string): Promise<void> {
         ? Math.max(0, pvPower + battDischarge - battCharge)
         : null;
 
-      await db.insert(bessReadings).values({
-        siteId: site.id,
-        soc,
-        soh: battery.battery_soh ?? null,
-        batteryPower: battPower,
-        batteryTemperature: battery.battery_temperature ?? null,
-        busVoltage: battery.bus_voltage ?? null,
-        pvPower,
-        loadPower,
-        valid: true,
-      });
-
+      // 1. Atualiza state PRIMEIRO (battery/pv/load + lastTelemetryAt) pra que
+      //    o load-monitor leia valores fresh via getSiteRuntimeState.
       await db.update(bessState).set({
         currentSoc: soc,
         currentSoh: battery.battery_soh ?? null,
@@ -314,7 +304,9 @@ async function pollSite(slug: string): Promise<void> {
         (loadPower != null ? ` Load=${loadPower.toFixed(2)}kW` : "")
       );
 
-      // Load monitor — observação passiva, não muda estado de bomba
+      // 2. Load monitor — calcula etiqueta antes da leitura ser persistida pra
+      //    que o INSERT carregue o loadHealth (alinha histórico de leituras com saúde).
+      let computedLoadHealth: string | null = null;
       try {
         const fresh = await getSiteRuntimeState(slug);
         if (fresh && process.env.LOAD_MONITOR_ENABLED === "true") {
@@ -331,6 +323,8 @@ async function pollSite(slug: string): Promise<void> {
             loadHealth: decision.health,
             loadFailureSince: decision.nextFailureSince,
           }).where(eq(bessState.siteId, site.id));
+
+          computedLoadHealth = decision.health;
 
           const shadow = process.env.LOAD_MONITOR_SHADOW === "true";
           if (shadow) {
@@ -356,6 +350,20 @@ async function pollSite(slug: string): Promise<void> {
       } catch (err) {
         console.error(`[load-monitor] ${slug}: erro não-fatal —`, err);
       }
+
+      // 3. INSERT da leitura JÁ com loadHealth (histórico unificado).
+      await db.insert(bessReadings).values({
+        siteId: site.id,
+        soc,
+        soh: battery.battery_soh ?? null,
+        batteryPower: battPower,
+        batteryTemperature: battery.battery_temperature ?? null,
+        busVoltage: battery.bus_voltage ?? null,
+        pvPower,
+        loadPower,
+        loadHealth: computedLoadHealth,
+        valid: true,
+      });
     } else {
       console.warn(`[PollScheduler] ${slug}: getBatteryRealKpi retornou vazio`);
     }

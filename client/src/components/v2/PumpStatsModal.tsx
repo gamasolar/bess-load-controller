@@ -78,7 +78,9 @@ export function PumpStatsModal({
             <Activity className="w-4 h-4 text-emerald-400" /> Operação da bomba — {siteName}
           </DialogTitle>
           <DialogDescription>
-            Tempo ligada e energia consumida estimada (baseada na potência configurada da bomba).
+            <span className="text-emerald-400">Verde</span> = comando ON (sistema armado).
+            {" "}<span className="text-orange-400">Laranja</span> = bomba realmente operando (carga detectada).
+            {" "}Diferença = sistema acionou mas motor não rodou (falha softstarter, manual, manutenção).
             {data && data.pumpKw > 0 && (
               <span className="block mt-1 font-mono text-[11px]">
                 Potência total considerada: {data.pumpKw.toFixed(1)} kW
@@ -126,15 +128,16 @@ export function PumpStatsModal({
           <p className="text-sm text-muted-foreground py-8 text-center">Sem dados no período.</p>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-2">
-              <SummaryCard icon={<Clock className="w-3.5 h-3.5" />} label="Total ligada" value={fmtHours(data.totalHoursOn)} />
-              <SummaryCard icon={<Zap className="w-3.5 h-3.5" />} label="Energia est." value={`${data.totalKwh.toFixed(1)} kWh`} />
+            <div className="grid grid-cols-4 gap-2">
+              <SummaryCard icon={<Clock className="w-3.5 h-3.5" />} label="Comando ON" value={fmtHours(data.totalHoursOn)} colorClass="text-emerald-400" />
+              <SummaryCard icon={<Activity className="w-3.5 h-3.5" />} label="Operando" value={fmtHours(data.totalHoursRunning ?? 0)} colorClass="text-orange-400" />
+              <SummaryCard icon={<Zap className="w-3.5 h-3.5" />} label="Energia est." value={`${(data.totalKwhEffective ?? data.totalKwh).toFixed(1)} kWh`} />
               <SummaryCard icon={<Activity className="w-3.5 h-3.5" />} label="Ciclos" value={String(data.totalCycles)} />
             </div>
 
             <div className="h-64 mt-2">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.buckets} margin={{ top: 10, right: 10, bottom: 4, left: 0 }}>
+                <BarChart data={data.buckets} margin={{ top: 10, right: 10, bottom: 4, left: 0 }} barCategoryGap="20%">
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                   <XAxis dataKey="label" stroke="#71717a" fontSize={11} />
                   <YAxis stroke="#71717a" fontSize={11} tickFormatter={fmtHours} width={56} />
@@ -143,13 +146,21 @@ export function PumpStatsModal({
                       background: "#0a0a0a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, fontSize: 12,
                     }}
                     formatter={(value: number, name: string) => {
-                      if (name === "hoursOn") return [fmtHours(value), "Tempo ligada"];
+                      if (name === "hoursOn") return [fmtHours(value), "Comando ON"];
+                      if (name === "hoursRunning") return [fmtHours(value), "Operando"];
                       return [value, name];
                     }}
                   />
                   <Bar
                     dataKey="hoursOn"
                     fill="#10b981"
+                    radius={[3, 3, 0, 0]}
+                    cursor={canDrillDown ? "pointer" : "default"}
+                    onClick={canDrillDown ? (p: any) => handleBarClick(p) : undefined}
+                  />
+                  <Bar
+                    dataKey="hoursRunning"
+                    fill="#fb923c"
                     radius={[3, 3, 0, 0]}
                     cursor={canDrillDown ? "pointer" : "default"}
                     onClick={canDrillDown ? (p: any) => handleBarClick(p) : undefined}
@@ -171,13 +182,13 @@ export function PumpStatsModal({
   );
 }
 
-function SummaryCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function SummaryCard({ icon, label, value, colorClass }: { icon: React.ReactNode; label: string; value: string; colorClass?: string }) {
   return (
     <div className="rounded-md border border-white/5 bg-black/30 p-3">
       <p className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
         {icon} {label}
       </p>
-      <p className="text-lg font-bold mt-0.5 tracking-tight">{value}</p>
+      <p className={`text-lg font-bold mt-0.5 tracking-tight ${colorClass ?? ""}`}>{value}</p>
     </div>
   );
 }

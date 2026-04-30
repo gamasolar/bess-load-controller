@@ -4,6 +4,7 @@ import { publicProcedure, adminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { eq, desc, and, gte, lt, inArray, asc } from "drizzle-orm";
 import { bessActions, bessConfig as bessConfigTable, bessState, bessReadings } from "../drizzle/schema";
+import { distributeRunningTime } from "./pump-stats-runtime";
 import { usersRouter, invitationsRouter, sitesRouter, whatsappRouter, systemAdminEndpoints } from "./admin-routes";
 import { triggerSitePoll } from "./poll-scheduler";
 import {
@@ -1109,9 +1110,9 @@ export const appRouter = router({
       .query(async ({ input }) => {
         await ensureSeeded();
         const site = await getSiteBySlug(input.slug);
-        if (!site) return { buckets: [], totalHoursOn: 0, totalKwh: 0, totalCycles: 0 };
+        if (!site) return { buckets: [], totalHoursOn: 0, totalHoursRunning: 0, totalKwh: 0, totalKwhEffective: 0, totalCycles: 0, pumpKw: 0 };
         const db = await getDb();
-        if (!db) return { buckets: [], totalHoursOn: 0, totalKwh: 0, totalCycles: 0 };
+        if (!db) return { buckets: [], totalHoursOn: 0, totalHoursRunning: 0, totalKwh: 0, totalKwhEffective: 0, totalCycles: 0, pumpKw: 0 };
 
         // CV → kW (1 CV ≈ 0.7355 kW). pumpPowerCv é potência por bomba; * pumpCount.
         const totalKwPump = (site.pumpPowerCv ?? 0) * (site.pumpCount ?? 0) * 0.7355;
@@ -1206,7 +1207,7 @@ export const appRouter = router({
         if (pendingStart) intervals.push({ start: pendingStart, end: new Date(rangeEndMs) });
 
         // Aloca buckets
-        type Bucket = { label: string; ts: number; secondsOn: number; cycles: number };
+        type Bucket = { label: string; ts: number; secondsOn: number; secondsRunning: number; cycles: number };
         const buckets: Bucket[] = [];
         for (let i = 0; i < bucketCount; i++) {
           const d = new Date(from);
@@ -1217,7 +1218,7 @@ export const appRouter = router({
             bucketKind === "hour" ? `${String(d.getHours()).padStart(2, "0")}h`
             : bucketKind === "day" ? `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`
             : d.toLocaleDateString("pt-BR", { month: "short" });
-          buckets.push({ label, ts: d.getTime(), secondsOn: 0, cycles: 0 });
+          buckets.push({ label, ts: d.getTime(), secondsOn: 0, secondsRunning: 0, cycles: 0 });
         }
 
         // Distribui intervalos pelos buckets
@@ -1248,19 +1249,48 @@ export const appRouter = router({
           }
         }
 
+        // Tempo EFETIVO da bomba operando: soma intervalos entre leituras
+        // consecutivas onde a anterior teve loadHealth=RUNNING_OK. Cada leitura
+        // representa o estado vigente de seu createdAt até a próxima leitura.
+        const readingRows = await db
+          .select({ createdAt: bessReadings.createdAt, loadHealth: bessReadings.loadHealth })
+          .from(bessReadings)
+          .where(and(
+            eq(bessReadings.siteId, site.id),
+            gte(bessReadings.createdAt, from),
+            lt(bessReadings.createdAt, to),
+          ))
+          .orderBy(asc(bessReadings.createdAt));
+
+        distributeRunningTime(readingRows, buckets, {
+          rangeEndMs: Math.min(now.getTime(), to.getTime()),
+          bucketIndexFor,
+          bucketEndOf: bucketEnd,
+        });
+
         const result = buckets.map((b) => ({
           label: b.label,
           ts: b.ts,
           hoursOn: +(b.secondsOn / 3600).toFixed(2),
+          hoursRunning: +(b.secondsRunning / 3600).toFixed(2),
           kwhEstimado: +((b.secondsOn / 3600) * totalKwPump).toFixed(2),
+          kwhEfetivo: +((b.secondsRunning / 3600) * totalKwPump).toFixed(2),
           cycles: b.cycles,
         }));
 
         const totalHoursOn = +result.reduce((s, b) => s + b.hoursOn, 0).toFixed(2);
+        const totalHoursRunning = +result.reduce((s, b) => s + b.hoursRunning, 0).toFixed(2);
         const totalKwh = +result.reduce((s, b) => s + b.kwhEstimado, 0).toFixed(2);
+        const totalKwhEffective = +result.reduce((s, b) => s + b.kwhEfetivo, 0).toFixed(2);
         const totalCycles = result.reduce((s, b) => s + b.cycles, 0);
 
-        return { buckets: result, totalHoursOn, totalKwh, totalCycles, pumpKw: +totalKwPump.toFixed(2) };
+        return {
+          buckets: result,
+          totalHoursOn, totalHoursRunning,
+          totalKwh, totalKwhEffective,
+          totalCycles,
+          pumpKw: +totalKwPump.toFixed(2),
+        };
       }),
 
     // List actions log (audit) for a site

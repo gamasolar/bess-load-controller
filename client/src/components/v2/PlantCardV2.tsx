@@ -277,6 +277,7 @@ export function PlantCardV2({ slug }: { slug: string }) {
               loadHistory={(s.derived as any).recentLoadPower ?? []}
               pumpPowerCv={(s.site as any).pumpPowerCv ?? 30}
               pumpCount={(s.site as any).pumpCount ?? 1}
+              lastTelemetryAt={s.state.lastTelemetryAt as Date | string | null}
             />
           </div>
 

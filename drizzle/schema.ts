@@ -91,6 +91,9 @@ export const bessReadings = mysqlTable("bess_readings", {
   pvPower: float("pvPower"), // kW - solar generation
   gridPower: float("gridPower"), // kW - grid import/export
   loadPower: float("loadPower"), // kW - total load consumption
+  // Saúde da bomba neste poll (RUNNING_OK / OFF_OK / VERIFYING / FAILED / RESIDUAL / UNKNOWN).
+  // Permite cruzar comando ON (bess_actions) com operação real (loadHealth=RUNNING_OK).
+  loadHealth: varchar("loadHealth", { length: 16 }),
   // Validity
   valid: boolean("valid").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
