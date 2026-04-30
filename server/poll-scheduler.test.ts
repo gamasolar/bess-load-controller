@@ -221,17 +221,23 @@ describe("pickPollInterval — regra 2 (descarga rápida projetada)", () => {
     criticalThreshold: 30, // socMinDesliga(25) + margem(5)
   };
 
-  it("descarga + SOC encostando: 34% com -22kW × 30min (horizon 2× × 15) → SOC projetado ~28.9 ≤ 30 → crítico", () => {
-    expect(
-      pickPollInterval({
-        ...dischargeBase,
-        currentSoc: 34,
-        batteryPowerKw: -22,
-      }),
-    ).toBe(2);
+  it("descarga moderada: 34% com -22kW (capacidade 215kWh, threshold 30) → ETA ~17min → poll ~9min", () => {
+    // dPerMin = 22/215*100/60 = 0.171
+    // remainingPp = 34 - (30+1) = 3
+    // ETA = 3/0.171 = 17.6min → ideal 8.8 → clamp(2, 15, 9) = 9
+    const v = pickPollInterval({
+      ...dischargeBase,
+      currentSoc: 34,
+      batteryPowerKw: -22,
+    });
+    expect(v).toBeGreaterThanOrEqual(8);
+    expect(v).toBeLessThanOrEqual(10);
   });
 
-  it("descarga forte: 32% com -30kW projeta SOC ~24% em 30min → crítico", () => {
+  it("descarga forte: 32% com -30kW → ETA ~4min → poll mínimo (crítico)", () => {
+    // dPerMin = 30/215*100/60 = 0.233
+    // remainingPp = 32 - 31 = 1
+    // ETA = 1/0.233 = 4.3min → ideal 2.1 → clamp(2, 15, 2) = 2
     expect(
       pickPollInterval({
         ...dischargeBase,
@@ -343,6 +349,129 @@ describe("pickPollInterval — escala gradual SOC < 50%", () => {
   });
   it("SOC = 25 (na fronteira da zona crítica) → crítico 2 min", () => {
     expect(pickPollInterval({ ...grad, socInCriticalZone: true, currentSoc: 25 })).toBe(2);
+  });
+});
+
+describe("pickPollInterval — ETA-based polling", () => {
+  // Barragem: socMinDesliga=20, margem=10, criticalThreshold=30, capacidade=215kWh
+  const eta = {
+    ...base,
+    socInCriticalZone: false,
+    pumpOff: false,
+    hourMinute: { h: 12, m: 0 }, // diurno
+    capacityKwh: 215,
+    criticalThreshold: 30,
+  };
+
+  it("bomba OFF carregando em zona crítica (cenário manhã pós-blackout) → padrão (sem urgência)", () => {
+    // SOC=14, bat=+58kW, threshold=30 → battPower>0 → sem urgência → padrão=15
+    expect(
+      pickPollInterval({
+        ...eta,
+        socInCriticalZone: true,
+        pumpOff: true,
+        currentSoc: 14,
+        batteryPowerKw: 58,
+      }),
+    ).toBe(15);
+  });
+
+  it("bomba ON SOC alto descarga moderada → padrão (cap)", () => {
+    // SOC=50, bat=-30kW: dPerMin=0.233, remaining=19, ETA=81min → ideal 40 → cap 15
+    expect(
+      pickPollInterval({
+        ...eta,
+        currentSoc: 50,
+        batteryPowerKw: -30,
+      }),
+    ).toBe(15);
+  });
+
+  it("incidente cf18fab: SOC=22, descarga -52kW → poll mínimo (já no limite)", () => {
+    // dPerMin = 52/215*100/60 = 0.403
+    // remainingPp = 22 - 31 = -9 (já passou) → critico=2
+    expect(
+      pickPollInterval({
+        ...eta,
+        currentSoc: 22,
+        batteryPowerKw: -52,
+      }),
+    ).toBe(2);
+  });
+
+  it("descarga forte mas SOC longe (45% / -52kW) → escala", () => {
+    // dPerMin = 0.403
+    // remainingPp = 45 - 31 = 14
+    // ETA = 34.7min → ideal 17.4 → clamp(2, 15, 17) = 15 (cap)
+    expect(
+      pickPollInterval({
+        ...eta,
+        currentSoc: 45,
+        batteryPowerKw: -52,
+      }),
+    ).toBe(15);
+  });
+
+  it("zona próxima (SOC=35, descarga -30kW) → escala intermediária", () => {
+    // dPerMin = 0.233
+    // remainingPp = 35 - 31 = 4
+    // ETA = 17.2min → ideal 8.6 → round(9) → clamp(2, 15, 9) = 9
+    const v = pickPollInterval({
+      ...eta,
+      currentSoc: 35,
+      batteryPowerKw: -30,
+    });
+    expect(v).toBeGreaterThanOrEqual(8);
+    expect(v).toBeLessThanOrEqual(10);
+  });
+
+  it("battPower zero (estável) → sem urgência → padrão", () => {
+    expect(
+      pickPollInterval({
+        ...eta,
+        currentSoc: 25,
+        batteryPowerKw: 0,
+      }),
+    ).toBe(15);
+  });
+
+  it("descarga muito leve (SOC=32, -2kW) → ETA grande → cap padrão", () => {
+    // dPerMin = 2/215*100/60 = 0.0155
+    // remainingPp = 1
+    // ETA = 64.5min → ideal 32 → cap 15
+    expect(
+      pickPollInterval({
+        ...eta,
+        currentSoc: 32,
+        batteryPowerKw: -2,
+      }),
+    ).toBe(15);
+  });
+
+  it("ETA-based com bomba ON fora janela usa intervaloBombaSemSolar como cap", () => {
+    // h=22 (fora janela), bomba ON → baseInterval=intervaloBombaSemSolar=5
+    // SOC=45, descarga -10kW → ETA grande → cap 5
+    expect(
+      pickPollInterval({
+        ...eta,
+        hourMinute: { h: 22, m: 0 },
+        currentSoc: 45,
+        batteryPowerKw: -10,
+      }),
+    ).toBe(5);
+  });
+
+  it("ETA com bomba OFF mas dentro janela e descarga (cargas auxiliares) → escala", () => {
+    // SOC=25, descarga -2kW (cargas auxiliares, ~1pp/h)
+    // dPerMin = 0.0155, remaining = 25-31 = -6 (já passou) → critico
+    expect(
+      pickPollInterval({
+        ...eta,
+        pumpOff: true,
+        currentSoc: 25,
+        batteryPowerKw: -2,
+      }),
+    ).toBe(2);
   });
 });
 

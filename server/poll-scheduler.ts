@@ -88,19 +88,40 @@ function interpolateInterval(
   return Math.max(1, Math.round(value));
 }
 
+/** Margem de segurança em pp aplicada ao threshold pra cálculo de ETA — garante
+ * que o TURN_OFF tenha sido disparado pela projeção em decideAction antes do
+ * SOC bater literalmente o threshold. */
+const ETA_SAFETY_PP = 1;
+
+/** Quantos polls a gente quer entre o agora e o ETA. Valor 2 = "1 poll antes
+ * do threshold + 1 poll após o cálculo agora". 0.5 do ETA por poll. */
+const ETA_DIVIDER = 2;
+
 /**
  * Decide o intervalo de polling em minutos.
  *
+ * Estratégia: quando temos batteryPower fresh, calculamos ETA até o threshold
+ * crítico e dividimos por 2 (sempre cabem ≥2 polls antes do TURN_OFF). Isso
+ * substitui a antiga regra fixa "zona crítica → 1 min", que estourava o rate
+ * limit Huawei (1 call/min). Sem batteryPower, fallback pra escala gradual
+ * por SOC.
+ *
  * Regras (ordem de precedência):
  *   1. Fora da janela [horarioLiberacao, horarioCorte) E bomba OFF →
- *      intervaloNoturno.
- *   2. SOC em zona crítica → intervaloCritico (proteção contra blackout).
- *   3. Descarga forte projetada → intervaloCritico (antecipa).
- *   4. Faixa de transição (SOC entre crítica e crítica + margem×2) →
- *      interpolação linear entre intervaloCritico e o intervalo "base"
- *      (intervaloPadrao dentro do horário, intervaloBombaSemSolar fora).
- *   5. Fora da janela E bomba ON → intervaloBombaSemSolar.
- *   6. Caso contrário → intervaloPadrao.
+ *      intervaloNoturno (nada pode mudar — religar exige horário).
+ *   2. ETA-based (quando há batteryPowerKw + currentSoc + capacityKwh +
+ *      criticalThreshold):
+ *        - descarregando (battPower < 0): intervalo = clamp(ETA/2,
+ *          intervaloCritico, baseInterval). Se já passou o target, retorna
+ *          intervaloCritico (emergência).
+ *        - carregando ou estável: baseInterval (sem urgência — watchdog
+ *          re-avalia em 30s se taxa mudar).
+ *   3. Fallback sem batteryPower:
+ *      3a. Zona crítica → intervaloCritico.
+ *      3b. Faixa de transição (SOC entre criticalThreshold e
+ *          TRANSITION_UPPER_SOC) → interpolação linear.
+ *   4. Caso contrário → baseInterval (intervaloPadrao dentro do horário,
+ *      intervaloBombaSemSolar fora com bomba ON).
  */
 export function pickPollInterval(opts: {
   socInCriticalZone: boolean;
@@ -148,27 +169,9 @@ export function pickPollInterval(opts: {
     return Math.min(intervalMin, cooldownPoll);
   };
 
-  // 1. Fora do horário com bomba OFF → noturno
+  // 1. Fora do horário com bomba OFF → noturno (nada pode mudar — religar
+  //    exige horário + SOC ≥ socMinReliga)
   if (outsideWindow && opts.pumpOff) return applyCooldownCap(opts.intervaloNoturno);
-
-  // 2. Zona crítica → crítico (proteção contra blackout)
-  if (opts.socInCriticalZone) return applyCooldownCap(opts.intervaloCritico);
-
-  // 3. Descarga forte projetada → antecipa pra crítico
-  if (
-    opts.criticalThreshold !== undefined &&
-    opts.batteryPowerKw != null && opts.batteryPowerKw < 0
-  ) {
-    const projected = projectSocAfter({
-      currentSoc: opts.currentSoc,
-      batteryPowerKw: opts.batteryPowerKw,
-      capacityKwh: opts.capacityKwh,
-      intervalMinutes: opts.intervaloPadrao * PROJECTION_HORIZON_FACTOR,
-    });
-    if (projected !== null && projected <= opts.criticalThreshold) {
-      return applyCooldownCap(opts.intervaloCritico);
-    }
-  }
 
   // Intervalo "base" pro contexto: bomba ON fora do horário usa o intervalo de
   // bomba sem solar; senão usa o padrão.
@@ -176,8 +179,46 @@ export function pickPollInterval(opts: {
     ? opts.intervaloBombaSemSolar
     : opts.intervaloPadrao;
 
-  // 4. SOC abaixo do threshold de transição → escala gradual entre
-  //    intervaloCritico e baseInterval, conforme SOC se aproxima da zona crítica.
+  // 2. ETA-based — quando temos battPower fresh, intervalo é proporcional ao
+  //    tempo até bater o threshold crítico (com safety margin).
+  if (
+    opts.batteryPowerKw != null &&
+    opts.currentSoc != null &&
+    opts.capacityKwh != null && opts.capacityKwh > 0 &&
+    opts.criticalThreshold !== undefined
+  ) {
+    if (opts.batteryPowerKw < 0) {
+      // Descarregando — calcula ETA até o threshold + safety
+      const dischargeKw = Math.abs(opts.batteryPowerKw);
+      const dPerMin = (dischargeKw / opts.capacityKwh) * 100 / 60;
+      const target = opts.criticalThreshold + ETA_SAFETY_PP;
+      const remainingPp = opts.currentSoc - target;
+
+      if (remainingPp <= 0) {
+        // Já passou o target — emergência, polla no mínimo
+        return applyCooldownCap(opts.intervaloCritico);
+      }
+      if (dPerMin > 0) {
+        const etaMin = remainingPp / dPerMin;
+        const ideal = etaMin / ETA_DIVIDER;
+        const clamped = Math.max(
+          opts.intervaloCritico,
+          Math.min(baseInterval, Math.round(ideal)),
+        );
+        return applyCooldownCap(clamped);
+      }
+    }
+    // Carregando (battPower > 0) ou estável (= 0) → sem urgência. Watchdog
+    // re-avalia em 30s se taxa mudar.
+    return applyCooldownCap(baseInterval);
+  }
+
+  // 3. Fallback sem batteryPower — usa lógica antiga (mais conservadora)
+  // 3a. Zona crítica → crítico
+  if (opts.socInCriticalZone) return applyCooldownCap(opts.intervaloCritico);
+
+  // 3b. SOC abaixo do threshold de transição → escala gradual entre
+  //     intervaloCritico e baseInterval, conforme SOC se aproxima da zona crítica.
   if (
     opts.currentSoc != null &&
     opts.currentSoc < TRANSITION_UPPER_SOC &&
