@@ -1,7 +1,7 @@
 # CLAUDE.md — BESS Load Controller Dashboard
 
 > **Para outro Claude (ou humano técnico) que abre este projeto pela primeira vez.**
-> Última atualização: 2026-04-25 · Última sessão: deploy self-hosted concluído em `gamaserver` + bugfixes de cookie/passwordHash.
+> Última atualização: 2026-05-01 · Última sessão: refactor MVP v2 (Passos 2-3) — removido projeção SOC, ETA polling, watchdog antecipa-polls, skip de inverter; soc-estimator corrigido. Restaurada filosofia "respeitar faixa configurada".
 
 ---
 
@@ -11,7 +11,7 @@ O que é: dashboard web (React + Express + tRPC + MySQL) que monitora 2 plantas 
 
 Onde roda: VPS `gamaserver` (Ubuntu 22.04, AMD Ryzen 9 7900X), instalação direta no host (não-Docker), em `/opt/bess-dashboard`, porta interna **3010**, exposto via Cloudflare Tunnel em `https://bess.gamasolar.com.br`.
 
-Status atual: dashboard rodando, login funcional, MQTT conectado, Sonoff da Barragem responde. **Ainda sem credenciais FusionSolar configuradas** — telemetria SOC virá vazia até preencher `.env`. Auto-fetch a cada 6min em standby.
+Status atual (2026-05-01): MVP v2 ativo (`USE_MVP_V2_CONTROL=true`). FusionSolar Northbound configurado. Controle automático da bomba operando: TURN_OFF quando `SOC ≤ socMinDesliga` literal, TURN_ON quando `SOC ≥ socMinReliga` + janela horária. Sem projeção, sem ETA, sem skip de inverter. Polling fixo (15min normal, 1min crítico). Coulomb counting de fallback se API offline > 30min com histórico ≥6 leituras pós-manobra.
 
 Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=false` — só admin cria contas via banco direto.
 
@@ -115,7 +115,10 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 | 2026-04-22 (mais tarde) | Fix FusionSolar device-IDs | Descoberta: API rejeita IDs curtos (`54174514`) que aparecem na URL do portal. Correção: usar IDs longos (`1000000054174514`) do campo `id` do `getDevList`. Edição cirúrgica em `server/fusionsolar.ts`. |
 | 2026-04-24 | Deploy em gamaserver | MySQL `bess_dashboard` + user, código em `/opt`, `.env`, build, migrations, systemd, nginx, cloudflared, DNS via `cloudflared tunnel route dns`. |
 | 2026-04-24 | Bugfixes pós-deploy | (a) `app.set('trust proxy', 1)` em `server/_core/index.ts`; (b) nginx `X-Forwarded-Proto $scheme` → `https` hardcoded (cloudflared sempre HTTPS); (c) `auth.me` redact de `passwordHash`. |
-| (futuro) | Caminho 1 | Coulomb counting + poll adaptativo + alarme Sonoff offline. Não implementado ainda. |
+| 2026-04-26 | Credenciais FusionSolar Northbound | `FUSIONSOLAR_USERNAME=gamasolar_bess` no `.env`. SOC real fluindo. |
+| 2026-04-29 | MVP v2 + features adaptativas | Implementado control-engine + poll-scheduler. Adicionados 3 commits adaptativos: `cf18fab` (projeção SOC futuro), `8196dfc` (ETA-based polling), `dc3a52e` (skip getInverterRealKpi). Cada um tentou mitigar incidente do dia anterior. |
+| 2026-04-30 | Incidente Barragem | Flapping da bomba (4 ciclos ON/OFF em 45min) + storm de 407 (308 em 24h) + 30min sem visibilidade de PV/load. Causas: histerese assimétrica entre TURN_OFF projetivo e TURN_ON literal; watchdog antecipava polls quebrando rate limit do Huawei. |
+| 2026-05-01 | Refactor de reversão | `DECISION-RESPECT-CONFIG.md` (Fernando) decidiu reverter ao MVP. Commits: `8c90eb7` (skip), `3c8611d` (projeção+margem), `55ab367` (ETA+watchdog), `72eb31a` (soc-estimator filtra por estado da bomba e retorna null sem histórico). 61 testes unitários verdes. |
 | (futuro) | Caminho 2 | Modbus TCP direto no SmartLogger 3000 — depende de visita técnica. |
 
 ---
@@ -140,7 +143,11 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 
 **SOC `source=unknown` é proteção, não bug.** Sem dados FusionSolar reais, `LoadControl.evaluateAndControl` recusa tomar decisão automática. Log típico: `[LoadControl] [AUTO] barragem: SOC ignorado — fonte="unknown"`. Vai sumir quando credenciais entrarem.
 
-**Capacidade útil das baterias** (pra quando Caminho 1 for implementado): 200 kWh por bateria LUNA2000-215KWH (datasheet Huawei). Piscinão = 400 kWh úteis (2 baterias), Barragem = 200 kWh úteis (1 bateria). 1pp de SOC ≈ 4 kWh em Piscinão, 2 kWh em Barragem.
+**Capacidade útil das baterias:** 200 kWh por bateria LUNA2000-215KWH (datasheet Huawei). Piscinão = 400 kWh úteis (2 baterias), Barragem = 200 kWh úteis (1 bateria). 1pp de SOC ≈ 4 kWh em Piscinão, 2 kWh em Barragem.
+
+**A faixa configurada é a regra (decisão 2026-05-01).** Operador define `socMinDesliga` e `socMinReliga` na UI. Código respeita literalmente, sem inventar margens, projeções, ETAs ou skips. Bomba desliga em `SOC ≤ socMinDesliga`, religa em `SOC ≥ socMinReliga` (+ janela horária). A "inteligência" está em o operador escolher os valores certos. Histórico em `DECISION-RESPECT-CONFIG.md`.
+
+**Por que removemos as features adaptativas (cf18fab, 8196dfc, dc3a52e).** Em 24-48h foram empilhadas 3 features pra resolver sintomas de incidentes anteriores. Resultado: interagiram causando flapping da bomba e cegueira em PV/load durante operação crítica. Custo da projeção: ~30% de capacidade útil sacrificada pra "proteger" contra overshoot do BMS — que é fenômeno físico não-linear (SOC pode saltar 5pp em 2min em SOC baixo), não pôde ser modelado por extrapolação de descarga linear. Lição: BMS overshoot resolve-se ajustando `socMinDesliga` na UI (ex.: 22-23) com base em medição empírica.
 
 ---
 
@@ -149,18 +156,19 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 ✅ **Funciona:**
 - Auth local, login navegador, JWT cookies (`Secure; HttpOnly; SameSite=None`)
 - Frontend React carrega, /login, /, /site/:slug
-- tRPC: auth.me, auth.logout, system.health, bess.* (todos os endpoints, mas alguns retornam vazio sem dados)
+- tRPC: auth.me, auth.logout, system.health, bess.*
 - MySQL connection pool
 - MQTT conexão ao broker remoto + polling de 30s do Sonoff
-- Sonoff da Barragem reporta `OFF` (estado real)
-- systemd com restart automático
-- nginx reverse proxy
-- Cloudflare Tunnel + DNS
+- Sonoff da Barragem reporta estado real
+- systemd com restart automático, nginx reverse proxy, Cloudflare Tunnel
+- **FusionSolar Northbound** ativo, SOC + battery_power + pv_power + load_power fluindo
+- **Controle automático MVP v2** Barragem: TURN_OFF/TURN_ON literais conforme `socMinDesliga`/`socMinReliga` da config
+- **Polling fixo** 15min (intervaloPadrao) ou 1min (intervaloCritico em zona crítica)
+- **Coulomb counting** fallback funcional se API offline > 30min com histórico ≥ 6 leituras pós-manobra
+- **`triggerSitePoll`** força reagendamento imediato após mudança de modo/config/comando manual
 
 ❌ **Não funciona ainda (pendente):**
-- FusionSolar telemetria → falta `FUSIONSOLAR_USERNAME` + `FUSIONSOLAR_SYSTEM_CODE` no `.env`
 - Telegram notifications → falta `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
-- Controle automático da bomba (depende do SOC vir do FusionSolar)
 - Sonoff no Piscinão (não existe hardware ainda)
 - Tela de "trocar minha senha" (não foi implementada — workaround é via SQL com bcrypt)
 
@@ -191,15 +199,9 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 
 3. **Mosquitto config duplicada em `srv769185`.** Cuidar antes de qualquer reboot daquela máquina.
 
-4. **Credenciais FusionSolar Northbound no `.env`.** Sem isso, dashboard fica sem SOC e load-control não funciona. Conta Northbound se cria no portal FusionSolar (Sistema → Empresa → Northbound), com permissão de leitura para a planta e dispositivos tipo Battery/ESS.
+4. **Subir `intervaloCritico` na UI de 1min pra 2min (Barragem).** Em zona crítica com 1min × 2 calls/poll, estoura rate limit do Huawei (1 call por janela rolante de 60s, por endpoint, e `getBattery` + `getInverter` usam o MESMO endpoint `/getDevRealKpi`). Resultado: pv/load=NULL durante zona crítica + 407 nos logs. Fix da UI: subir `intervaloCritico` pra 2min. Custo: latência detecção sobe de 30s pra 60s mediano (~0.2pp em SOC ≈ irrelevante). **Não readicionar skip de inverter no código.**
 
-5. **Implementar Caminho 1** (Coulomb counting + poll adaptativo + alarme Sonoff offline). Mitiga rate limit FusionSolar mantendo SOC estimado fresh entre fetches reais. Especificação detalhada na conversa de 2026-04-22 — resumo:
-   - Novo módulo `server/soc-estimator.ts`
-   - Novo módulo `server/poll-scheduler.ts`
-   - Schema: `bess_sites.usableCapacityKwh` (default 200), `bess_state.estimatedSoc/lastEstimateAt/estimateDriftPp`
-   - Heurística de zonas: crítica (±3pp do limite, poll 5min), atenção (±8pp, 10min), estável (20min)
-   - Alarme `IMPLAUSIBLE_SOC_DRIFT` se drift > 5pp
-   - Decisão híbrida: usa estimativa se `lastTelemetryAt < 10min`, senão tenta fetch real com timeout 30s
+5. **Bug raiz `loadStatus` dessincronizado pós-blackout** (`mqtt-sync.ts`). Após queda de energia, Sonoff volta em OFF mas `bess_state.loadStatus` continua ON. Alarmes DIVERGENCE abrem/fecham inconsistentemente. mqtt-sync auto-converge no próximo ciclo, mas timing/correção precisam ser auditados. **Não causado nem resolvido pelo refactor de 2026-05-01** — endereçar separadamente.
 
 ### 🟢 Médio prazo
 
@@ -279,10 +281,14 @@ history -c
 - Verifica que `auth.me` retorna user, não null: `curl -s '.../api/trpc/auth.me?input=%7B%7D' -b cookie.txt`.
 
 **Rate limit FusionSolar (HTTP 407 / `failCode: 407`)**
-- Esperado eventualmente. `server/fusionsolar.ts` tem backoff exponencial 1min→2min→4min→max 10min. **Não diminuir intervalos** — Huawei rate limit é fixo, não pode ser elevado. Caminho 1 (Coulomb counting) mitiga isso.
+- Endpoint `/getDevRealKpi` aceita ~1 call por janela rolante de 60s, **por endpoint**. `getBatteryRealKpi` e `getInverterRealKpi` usam o MESMO endpoint. Em modo normal (`intervaloPadrao=15min` × 2 calls/poll) folga é enorme. Em zona crítica (`intervaloCritico=1min` × 2 calls/poll) estoura. Solução do operador: subir `intervaloCritico` na UI pra 2min. **Não readicionar skip de inverter no código** (causa cegueira de PV/load — incidente 30/04).
+- 407 ocasional isolado: aceitável. `server/fusionsolar.ts` tem backoff de 60s.
 
-**"SOC ignorado — fonte='unknown'"**
-- Esperado se `.env` não tem credenciais FusionSolar. LoadControl recusa decidir sem dado real. Preencher `FUSIONSOLAR_USERNAME` e `FUSIONSOLAR_SYSTEM_CODE`, restart, esperar 6min do auto-fetch.
+**"AUTO religa: ... requer SOC REAL (atual: ESTIMATED)"**
+- `decideAction` em `server/control-engine.ts` recusa religar baseado em SOC estimado. Permite religar só com leitura fresca (`lastTelemetryAt < 30min`). Se persistir, API pode estar offline > 30min — verificar `journalctl -u bess-dashboard | grep -i fusionsolar`.
+
+**"Nenhuma condição satisfeita" / bomba não age esperado**
+- `decideAction` é estritamente literal: TURN_OFF se `pumpState=ON ∧ SOC ≤ socMinDesliga`, TURN_ON se `pumpState=OFF ∧ SOC ≥ socMinReliga ∧ janela ∧ socSource=REAL`. Sem essas condições, não age. Verificar `bess_config.controlMode` (`AUTO` vs `MANUAL`), `bess_state.cooldownUntil` (cooldown ativo), `bess_state.lastTelemetryAt` (idade da leitura).
 
 **Sonoff offline (`tele/bess_sonoff/LWT` retorna `Offline`)**
 - Causa em ~99% dos casos: Starlink da planta intermitente, ou Sonoff caiu de Wi-Fi e precisa reboot físico. Não tem fix remoto — depende de alguém na planta.
@@ -441,4 +447,28 @@ sudo systemctl restart cloudflared
 
 ---
 
-*Este arquivo é a fonte de verdade pra contexto operacional do projeto. Atualizar a cada sessão significativa. Última atualização: 2026-04-25.*
+## 14. Disciplina pós-refactor (DECISION-RESPECT-CONFIG.md, 2026-05-01)
+
+**Regra fundamental:** o código respeita a faixa configurada pelo operador na UI, sem inventar margens, projeções, antecipações ou skips. Inteligência é do operador escolher faixa certa pra cada planta.
+
+**Quando aparecer problema operacional** (flapping, overshoot, ciclo curto, 407 sustentado):
+
+1. Observar sintoma e medir (logs, queries DB)
+2. Ajustar config na UI (`socMinDesliga`, `socMinReliga`, `cooldownAcao`, `intervaloCritico`)
+3. Observar de novo por 24-48h
+4. Documentar a descoberta em `DECISION-RESPECT-CONFIG.md` ou em sessão seguinte do CLAUDE.md
+5. Só considerar mudança de código se config sozinha não resolver após ≥2 semanas, e mesmo aí: 1 mudança, validada 1-2 semanas antes da próxima
+
+**Anti-padrão a evitar:** adicionar feature adaptativa (projeção, ETA, skip de coleta, watchdog antecipa) em resposta a incidente de 24h. Vimos no incidente 2026-04-29/30 que 3 features adaptativas empilhadas em 48h interagiram causando flapping da bomba e cegueira de PV/load. Reverter ao MVP foi a saída.
+
+**Antes de modificar `decideAction`, `pickPollInterval` ou `pollSite`:** consultar `DECISION-RESPECT-CONFIG.md`. Mudanças nesses caminhos críticos exigem autorização explícita do operador, com diff mostrado antes da edição.
+
+**Caminhos críticos protegidos:**
+- `server/control-engine.ts:decideAction` — lógica linear de TURN_ON/TURN_OFF. Sem projeção, sem margem.
+- `server/poll-scheduler.ts:pickPollInterval` — cadência fixa por regras simples. Sem ETA, sem watchdog antecipando.
+- `server/poll-scheduler.ts:pollSite` — sempre coleta `getBatteryRealKpi` + (com pause 5s) `getInverterRealKpi`. Sem skip.
+- `server/soc-estimator.ts` — fallback Coulomb counting; retorna `null` se histórico insuficiente pós-manobra (não SOC velho).
+
+---
+
+*Este arquivo é a fonte de verdade pra contexto operacional do projeto. Atualizar a cada sessão significativa. Última atualização: 2026-05-01.*
