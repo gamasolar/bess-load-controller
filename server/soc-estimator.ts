@@ -3,12 +3,14 @@
  *
  * Quando a FusionSolar fica indisponível (rate limit, manutenção, rede),
  * estimamos o SOC atual usando a taxa de descarga/carga calculada das
- * últimas N leituras reais. Permite o control-engine seguir agindo de
- * forma conservadora durante janelas curtas (até maxSemTelemetria minutos).
+ * últimas N leituras reais com a bomba no MESMO estado atual. Permite o
+ * control-engine seguir agindo de forma conservadora durante janelas
+ * curtas (até maxSemTelemetria minutos).
  *
- * Política: se não há histórico suficiente (< MIN_VALID_READINGS), retornamos
- * null e o control-engine deve agir conservador (não religa, mas pode desligar
- * se já ficou estagnado abaixo do mínimo).
+ * Política: se não há histórico suficiente posterior à última manobra
+ * (< MIN_VALID_READINGS), retornamos null e o control-engine cai em
+ * "Sem SOC disponível" → não age. Bomba mantém estado. Blackout (regra
+ * 1 do decideAction) é a rede de segurança absoluta.
  */
 
 import { eq, and, gte, desc } from "drizzle-orm";
@@ -28,16 +30,64 @@ export type SocEstimate = {
 };
 
 /**
- * Calcula taxa média de variação de SOC (pp/min) baseada nas últimas
- * MIN_VALID_READINGS leituras válidas. Retorna null se não há histórico
- * suficiente ou se as leituras estão muito espaçadas/concentradas pra ter
- * sinal confiável.
+ * PURA. Filtra leituras pra ficar só com as POSTERIORES à última manobra
+ * (TURN_ON / TURN_OFF). Garante que as N leituras usadas pra calcular taxa
+ * representam UM único estado da bomba, sem misturar descarga rápida com
+ * idle. Retorna null se não houver leituras suficientes pós-manobra.
  *
- * Sinal: positivo = SOC subindo (carregando), negativo = SOC caindo.
+ * @param readingsDesc leituras ordenadas decrescentemente (mais recente primeiro)
+ * @param lastManeuverAt timestamp da última mudança ON/OFF; null = sem manobra registrada
+ * @param minRequired número mínimo de leituras pós-manobra exigidas
+ */
+export function pickReadingsForRate<T extends { createdAt: Date }>(
+  readingsDesc: T[],
+  lastManeuverAt: Date | null,
+  minRequired: number,
+): T[] | null {
+  const cutoff = lastManeuverAt ?? new Date(0);
+  const filtered = readingsDesc.filter((r) => r.createdAt > cutoff);
+  if (filtered.length < minRequired) return null;
+  return filtered.slice(0, minRequired);
+}
+
+/**
+ * PURA. Taxa pp/min entre a leitura mais recente e a mais antiga.
+ * readingsDesc[0] = mais recente, readingsDesc[N-1] = mais antiga.
+ * Negativa = descarregando. Positiva = carregando.
+ * Retorna null se < 2 leituras ou gap < 1 minuto (ruído).
+ */
+export function computeRate(
+  readingsDesc: Array<{ soc: number; createdAt: Date }>,
+): number | null {
+  if (readingsDesc.length < 2) return null;
+  const newest = readingsDesc[0];
+  const oldest = readingsDesc[readingsDesc.length - 1];
+  const deltaSoc = newest.soc - oldest.soc;
+  const deltaMin = (newest.createdAt.getTime() - oldest.createdAt.getTime()) / 60_000;
+  if (deltaMin < 1) return null;
+  return deltaSoc / deltaMin;
+}
+
+/**
+ * Calcula taxa pp/min usando MIN_VALID_READINGS leituras posteriores à
+ * última manobra da bomba (lastManeuverAt). Garante que todas as leituras
+ * usadas refletem o MESMO estado atual da bomba (ON ou OFF), eliminando
+ * distorção causada por mistura de descarga (-52kW) + idle (-0.08kW).
+ *
+ * Retorna null se não há histórico suficiente pós-manobra dentro da
+ * janela de HISTORY_WINDOW_HOURS.
  */
 export async function calculateDischargeRate(siteId: number): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
+
+  const stateRows = await db
+    .select()
+    .from(bessState)
+    .where(eq(bessState.siteId, siteId))
+    .limit(1);
+  const state = stateRows[0];
+  if (!state) return null;
 
   const since = new Date(Date.now() - HISTORY_WINDOW_HOURS * 60 * 60 * 1000);
   const rows = await db
@@ -51,39 +101,34 @@ export async function calculateDischargeRate(siteId: number): Promise<number | n
       ),
     )
     .orderBy(desc(bessReadings.createdAt))
-    .limit(MIN_VALID_READINGS);
+    .limit(MIN_VALID_READINGS * 3); // margem pro filtro pós-manobra
 
-  if (rows.length < MIN_VALID_READINGS) return null;
+  const filtered = pickReadingsForRate(rows, state.lastManeuverAt, MIN_VALID_READINGS);
+  if (!filtered) return null;
 
-  // rows está em desc — mais recente em rows[0], mais antigo em rows[N-1].
-  const newest = rows[0];
-  const oldest = rows[rows.length - 1];
-  const deltaSoc = newest.soc - oldest.soc;
-  const deltaMs = newest.createdAt.getTime() - oldest.createdAt.getTime();
-  const deltaMin = deltaMs / 60_000;
-
-  if (deltaMin < 1) return null;
-
-  return deltaSoc / deltaMin;
+  return computeRate(filtered);
 }
 
-/**
- * Estima o SOC atual de um site. Se os dados em bess_state são frescos
- * (< STALE_THRESHOLD_MS), retorna o valor real direto. Caso contrário,
- * estima usando a última leitura real + tempo decorrido * rate.
- *
- * Retorna null se nunca houve leitura real (lastTelemetryAt is null) ou
- * se não há rate calculável (< MIN_VALID_READINGS no histórico).
- */
-// Threshold pra considerar a leitura "fresca o bastante pra usar como REAL"
-// na UI. 30 min cobre todos os intervalos de polling (padrão 15, crítico 2,
-// noturno 60 — esse último excede mas é OK porque madrugada com bomba OFF
-// tem variação muito pequena).
+// Threshold pra considerar a leitura "fresca o bastante pra usar como REAL".
+// 30 min cobre intervaloPadrao=15min e zona crítica=1min com folga.
 const STALE_THRESHOLD_MS = 30 * 60_000;
 // Acima disso, mesmo o estimador é descartado — leitura velha demais pra
 // confiar em qualquer estimativa.
 const ABANDON_THRESHOLD_MS = 6 * 60 * 60_000; // 6h
 
+/**
+ * Estima o SOC atual de um site.
+ *
+ * Comportamento:
+ *   - Sem state ou sem lastTelemetryAt → null (nunca houve leitura real)
+ *   - Idade > 6h → null (dado velho demais pra confiar)
+ *   - Idade < 30 min → REAL (leitura fresca, retorna direto)
+ *   - 30 min < idade ≤ 6h e há histórico pós-manobra suficiente → ESTIMATED
+ *     com taxa calculada
+ *   - 30 min < idade ≤ 6h e SEM histórico suficiente → null (não estima
+ *     com dado velho; control-engine cai em "Sem SOC disponível" e não age,
+ *     bomba mantém estado, blackout protege em última instância)
+ */
 export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | null> {
   const db = await getDb();
   if (!db) return null;
@@ -114,7 +159,7 @@ export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | 
     };
   }
 
-  // Tenta estimar via Coulomb counting com base nas leituras anteriores.
+  // Tenta estimar via Coulomb counting com base nas leituras pós-manobra.
   const rate = await calculateDischargeRate(siteId);
   if (rate !== null) {
     const minutesElapsed = ageMs / 60_000;
@@ -127,14 +172,8 @@ export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | 
     };
   }
 
-  // Fallback: estimador falhou (histórico insuficiente), mas a leitura ainda
-  // está dentro do range aceitável (≤ 6h) — devolve o último valor conhecido
-  // marcado como ESTIMATED. Importante: control-engine recusa religar com
-  // socSource ≠ REAL, então a bomba não vai religar baseada num dado velho.
-  return {
-    soc: state.currentSoc,
-    source: "ESTIMATED",
-    ageSeconds,
-    ratePpPerMin: null,
-  };
+  // Sem rate calculável (histórico insuficiente, ou manobra muito recente):
+  // retorna null. control-engine cai em "Sem SOC disponível" → não age.
+  // Bomba mantém estado atual. Blackout protege se SOC bater 15.
+  return null;
 }
