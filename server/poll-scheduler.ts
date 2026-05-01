@@ -305,23 +305,12 @@ async function pollSite(slug: string): Promise<void> {
 
     const client = getFusionSolarClient();
     const battery = await client.getBatteryRealKpi(batteryDevIdStr, 41, site.id);
-    // Huawei /getDevRealKpi aceita ~1 call/min. Em zona crítica o poll roda 1min,
-    // então não cabem battery + inverter no mesmo poll — 2ª sempre toma 407.
-    // Solução: pula inverter em zona crítica. loadHealth fica UNKNOWN nesses
-    // minutos, mas a decisão crítica (TURN_OFF) só depende de SOC fresh, e o
-    // sleep entre calls não basta porque o limite é por janela de 60s.
-    const freshSoc = battery?.battery_soc ?? runtime.soc;
-    const inCriticalZoneNow =
-      freshSoc !== null
-      && isInCriticalZone(freshSoc, config.socMinDesliga, config.margemZonaCritica);
-    const shouldFetchInverter = !!inverterDevIdStr && !inCriticalZoneNow;
-    if (inverterDevIdStr && inCriticalZoneNow) {
-      console.log(`[PollScheduler] ${slug}: zona crítica (SOC=${freshSoc}%), pulando getInverterRealKpi`);
-    }
-    if (shouldFetchInverter) {
+    // Pause de 5s entre calls pra atenuar rate limit Huawei. 407 ocasional
+    // gera warn no log, não vira regra permanente de skip.
+    if (inverterDevIdStr) {
       await new Promise((r) => setTimeout(r, 5000));
     }
-    const inverter = shouldFetchInverter
+    const inverter = inverterDevIdStr
       ? await client.getInverterRealKpi(inverterDevIdStr, 1)
       : null;
 
