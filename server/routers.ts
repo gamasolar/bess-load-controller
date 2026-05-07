@@ -788,6 +788,7 @@ export const appRouter = router({
             cooldownAcao: runtime.config.cooldownAcao,
             maxSemTelemetria: runtime.config.maxSemTelemetria,
             controlMode: runtime.config.controlMode,
+            overshootFactor: runtime.config.overshootFactor,
           },
           state: {
             loadStatus: runtime.state.loadStatus,
@@ -1344,8 +1345,9 @@ export const appRouter = router({
         intervaloCritico: z.number().int().min(1).max(15).optional(),
         intervaloNoturno: z.number().int().min(15).max(240).optional(),
         intervaloBombaSemSolar: z.number().int().min(1).max(30).optional(),
-        cooldownAcao: z.number().int().min(1).max(30).optional(),
+        cooldownAcao: z.number().int().min(0).max(30).optional(),
         maxSemTelemetria: z.number().int().min(5).max(120).optional(),
+        overshootFactor: z.number().min(0).max(0.2).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         await ensureSeeded();
@@ -1372,6 +1374,7 @@ export const appRouter = router({
           intervaloBombaSemSolar: input.intervaloBombaSemSolar ?? current.intervaloBombaSemSolar,
           cooldownAcao: input.cooldownAcao ?? current.cooldownAcao,
           maxSemTelemetria: input.maxSemTelemetria ?? current.maxSemTelemetria,
+          overshootFactor: input.overshootFactor ?? current.overshootFactor,
         };
 
         if (next.socMinReliga - next.socMinDesliga < 3) {

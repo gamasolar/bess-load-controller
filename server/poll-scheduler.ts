@@ -154,16 +154,39 @@ async function pollSite(slug: string): Promise<void> {
 
     const client = getFusionSolarClient();
     const battery = await client.getBatteryRealKpi(batteryDevIdStr, 41, site.id);
-    // Pause de 5s entre calls pra atenuar rate limit Huawei. 407 ocasional
-    // gera warn no log, não vira regra permanente de skip.
-    if (inverterDevIdStr) {
-      await new Promise((r) => setTimeout(r, 5000));
+
+    const db = await getDb();
+
+    // ── Stage 1: persistir SOC/Bat ANTES da call de inversor ──
+    // getInverterRealKpi bloqueia ~70s pra respeitar a janela rolante da Huawei
+    // (`/getDevRealKpi` é 1/min POR ENDPOINT, e bat+inv usam o mesmo). Atualizar
+    // o state com SOC já agora libera o controle (decideAction só usa SOC) pra
+    // atuar sem esperar PV/Load. PV/Load chegam ~70s depois e cobrem o card e o
+    // load-monitor.
+    if (battery && battery.battery_soc != null && db) {
+      const soc = battery.battery_soc;
+      const battPower = battery.battery_power ?? null;
+      await db.update(bessState).set({
+        currentSoc: soc,
+        currentSoh: battery.battery_soh ?? null,
+        currentBatteryPower: battPower,
+        currentTemperature: battery.battery_temperature ?? null,
+        lastTelemetryAt: new Date(),
+        socSource: "fusionsolar",
+      }).where(eq(bessState.siteId, site.id));
+      console.log(
+        `[PollScheduler] ${slug}: stage1 SOC=${soc.toFixed(1)}%` +
+        (battPower != null ? ` Bat=${battPower.toFixed(2)}kW` : "")
+      );
     }
+    // Controle atua com SOC fresco (não depende de PV/Load).
+    await evaluateAndAct(slug);
+
+    // ── Stage 2: call do inversor (espera ~70s no waitForRateLimit) ──
     const inverter = inverterDevIdStr
       ? await client.getInverterRealKpi(inverterDevIdStr, 1)
       : null;
 
-    const db = await getDb();
     if (battery && battery.battery_soc != null && db) {
       const soc = battery.battery_soc;
       const battPower = battery.battery_power ?? null;
@@ -174,25 +197,30 @@ async function pollSite(slug: string): Promise<void> {
         ? Math.max(0, pvPower + battDischarge - battCharge)
         : null;
 
-      // 1. Atualiza state PRIMEIRO (battery/pv/load + lastTelemetryAt) pra que
-      //    o load-monitor leia valores fresh via getSiteRuntimeState.
       await db.update(bessState).set({
-        currentSoc: soc,
-        currentSoh: battery.battery_soh ?? null,
-        currentBatteryPower: battPower,
-        currentTemperature: battery.battery_temperature ?? null,
         currentPvPower: pvPower,
         currentLoadPower: loadPower,
         lastTelemetryAt: new Date(),
-        socSource: "fusionsolar",
       }).where(eq(bessState.siteId, site.id));
 
       console.log(
-        `[PollScheduler] ${slug}: SOC=${soc.toFixed(1)}%` +
+        `[PollScheduler] ${slug}: stage2 SOC=${soc.toFixed(1)}%` +
         (battPower != null ? ` Bat=${battPower.toFixed(2)}kW` : "") +
         (pvPower != null ? ` PV=${pvPower.toFixed(2)}kW` : "") +
         (loadPower != null ? ` Load=${loadPower.toFixed(2)}kW` : "")
       );
+
+      // Log da compensação de overshoot — só quando feature ativa (factor > 0).
+      // Ver DECISION-OVERSHOOT-COMPENSATION.md (2026-05-07).
+      if (config.overshootFactor > 0) {
+        const descarga = battPower !== null && battPower < 0 ? Math.abs(battPower) : 0;
+        const overshootEstimado = descarga * config.overshootFactor;
+        const thresholdEfetivo = config.socMinDesliga + overshootEstimado;
+        console.log(
+          `[ControlEngine] ${slug}: SOC=${soc.toFixed(1)}% Bat=${battPower !== null ? battPower.toFixed(2) : "null"}kW ` +
+          `overshoot_estimado=${overshootEstimado.toFixed(1)}pp threshold_efetivo=${thresholdEfetivo.toFixed(1)}%`
+        );
+      }
 
       // 2. Load monitor — calcula etiqueta antes da leitura ser persistida pra
       //    que o INSERT carregue o loadHealth (alinha histórico de leituras com saúde).
@@ -257,8 +285,6 @@ async function pollSite(slug: string): Promise<void> {
     } else {
       console.warn(`[PollScheduler] ${slug}: getBatteryRealKpi retornou vazio`);
     }
-
-    await evaluateAndAct(slug);
 
     const updated = await getSiteRuntimeState(slug);
     const now = new Date();

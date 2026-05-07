@@ -21,6 +21,7 @@ type ConfigShape = {
   intervaloBombaSemSolar: number;
   cooldownAcao: number;
   maxSemTelemetria: number;
+  overshootFactor: number;
 };
 
 export function ConfigModalV2({
@@ -52,16 +53,30 @@ export function ConfigModalV2({
   const setField = <K extends keyof ConfigShape>(k: K, v: ConfigShape[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
-  const numberFields: { k: keyof ConfigShape; label: string; min: number; max: number; suffix?: string }[] = [
+  const numberFields: {
+    k: keyof ConfigShape;
+    label: string;
+    min: number;
+    max: number;
+    step?: number;
+    suffix?: string;
+    helpText?: string;
+  }[] = [
     { k: "socBlackout", label: "Blackout (SOC mínimo absoluto)", min: 5, max: 40, suffix: "%" },
     { k: "socMinDesliga", label: "Desliga abaixo de", min: 5, max: 60, suffix: "%" },
     { k: "socMinReliga", label: "Religa acima de", min: 10, max: 80, suffix: "%" },
     { k: "margemZonaCritica", label: "Margem zona crítica", min: 0, max: 20, suffix: "p.p." },
+    {
+      k: "overshootFactor",
+      label: "Compensação de overshoot",
+      min: 0, max: 0.2, step: 0.005, suffix: "pp/kW",
+      helpText: "Antecipa o desligamento da bomba durante descarga alta pra absorver o overshoot do BMS. 0 = desligado. Valor sugerido: 0.050.",
+    },
     { k: "intervaloPadrao", label: "Intervalo padrão de polling", min: 2, max: 60, suffix: "min" },
     { k: "intervaloCritico", label: "Intervalo crítico de polling", min: 1, max: 15, suffix: "min" },
     { k: "intervaloNoturno", label: "Intervalo fora do horário (bomba OFF)", min: 15, max: 240, suffix: "min" },
     { k: "intervaloBombaSemSolar", label: "Intervalo fora do horário (bomba ON, sem solar)", min: 1, max: 30, suffix: "min" },
-    { k: "cooldownAcao", label: "Cooldown entre ações", min: 1, max: 30, suffix: "min" },
+    { k: "cooldownAcao", label: "Cooldown entre ações", min: 0, max: 30, suffix: "min" },
     { k: "maxSemTelemetria", label: "Máximo sem telemetria", min: 5, max: 120, suffix: "min" },
   ];
 
@@ -75,20 +90,24 @@ export function ConfigModalV2({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          {numberFields.map(({ k, label, min, max, suffix }) => (
-            <div key={k} className="grid grid-cols-2 items-center gap-3">
-              <Label htmlFor={k}>{label}</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  id={k}
-                  type="number"
-                  min={min}
-                  max={max}
-                  value={form[k] as number}
-                  onChange={(e) => setField(k, Number(e.target.value) as any)}
-                  className="font-mono"
-                />
-                {suffix && <span className="text-xs text-muted-foreground w-10">{suffix}</span>}
+          {numberFields.map(({ k, label, min, max, step, suffix, helpText }) => (
+            <div key={k} className="grid grid-cols-2 items-start gap-3">
+              <Label htmlFor={k} className="pt-2">{label}</Label>
+              <div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id={k}
+                    type="number"
+                    min={min}
+                    max={max}
+                    step={step ?? 1}
+                    value={form[k] as number}
+                    onChange={(e) => setField(k, Number(e.target.value) as any)}
+                    className="font-mono"
+                  />
+                  {suffix && <span className="text-xs text-muted-foreground w-12">{suffix}</span>}
+                </div>
+                {helpText && <p className="text-xs text-muted-foreground mt-1.5">{helpText}</p>}
               </div>
             </div>
           ))}

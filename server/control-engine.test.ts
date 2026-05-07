@@ -13,6 +13,8 @@ function makeState(overrides: Partial<{
   socBlackout: number;
   horarioLiberacao: string;
   horarioCorte: string;
+  overshootFactor: number;
+  currentBatteryPower: number | null;
 }> = {}): SiteRuntimeState {
   const config: BessConfig = {
     id: 1, siteId: 1,
@@ -26,11 +28,13 @@ function makeState(overrides: Partial<{
     margemZonaCritica: 5, intervaloPadrao: 15, intervaloCritico: 2,
     cooldownAcao: 5, maxSemTelemetria: 30,
     controlMode: overrides.controlMode ?? "AUTO",
+    overshootFactor: overrides.overshootFactor ?? 0,
     updatedAt: new Date(),
   };
   const state: BessState = {
     id: 1, siteId: 1, loadStatus: "on", mode: "auto",
-    currentSoc: 50, currentSoh: null, currentBatteryPower: null,
+    currentSoc: 50, currentSoh: null,
+    currentBatteryPower: overrides.currentBatteryPower ?? null,
     currentTemperature: null, currentPvPower: null, currentLoadPower: null,
     lowCounter: 0, highCounter: 0, lastManeuverAt: null,
     healthStatus: "healthy", lastDecision: null,
@@ -235,6 +239,75 @@ describe("decideAction", () => {
         cooldownUntil: new Date(NOON.getTime() + 60_000),
       });
       expect(decideAction(s, NOON).kind).toBe("TURN_OFF");
+    });
+  });
+
+  // Compensação de overshoot BMS — DECISION-OVERSHOOT-COMPENSATION (2026-05-07).
+  // Fórmula: overshoot_pp = |currentBatteryPower| * overshootFactor (só com pump ON e descarga).
+  describe("Compensação de overshoot BMS", () => {
+    it("aplica compensação quando bomba ON e descarregando", () => {
+      const s = makeState({
+        soc: 27,
+        pumpState: "ON",
+        currentBatteryPower: -47,
+        socMinDesliga: 25,
+        overshootFactor: 0.05,
+      });
+      const d = decideAction(s, NOON);
+      expect(d.kind).toBe("TURN_OFF");
+      expect(d.reason).toContain("overshoot 2.4pp");
+      expect(d.reason).toContain("descarga 47.0kW");
+      expect(d.reason).toContain("factor 0.05");
+    });
+
+    it("não aplica compensação quando bomba OFF", () => {
+      // bomba OFF + bat=-0.07 (auxiliares) — bloco TURN_OFF não entra.
+      // SOC=26 < socMinReliga=30 → religa também não dispara → NONE.
+      const s = makeState({
+        soc: 26,
+        pumpState: "OFF",
+        currentBatteryPower: -0.07,
+        socMinDesliga: 25,
+        overshootFactor: 0.05,
+      });
+      expect(decideAction(s, NOON).kind).toBe("NONE");
+    });
+
+    it("comporta como DECISION-RESPECT-CONFIG quando factor=0", () => {
+      const s = makeState({
+        soc: 25,
+        pumpState: "ON",
+        currentBatteryPower: -47,
+        socMinDesliga: 25,
+        overshootFactor: 0,
+      });
+      const d = decideAction(s, NOON);
+      expect(d.kind).toBe("TURN_OFF");
+      expect(d.reason).not.toContain("overshoot");
+    });
+
+    it("dispara TURN_OFF antecipado em descarga alta", () => {
+      // threshold_efetivo = 25 + (50 * 0.05) = 27.5; SOC=27 ≤ 27.5
+      const s = makeState({
+        soc: 27,
+        pumpState: "ON",
+        currentBatteryPower: -50,
+        socMinDesliga: 25,
+        overshootFactor: 0.05,
+      });
+      expect(decideAction(s, NOON).kind).toBe("TURN_OFF");
+    });
+
+    it("não dispara TURN_OFF em descarga moderada quando SOC ainda longe", () => {
+      // threshold_efetivo = 27.5; SOC=30 > 27.5
+      const s = makeState({
+        soc: 30,
+        pumpState: "ON",
+        currentBatteryPower: -50,
+        socMinDesliga: 25,
+        overshootFactor: 0.05,
+      });
+      expect(decideAction(s, NOON).kind).toBe("NONE");
     });
   });
 });

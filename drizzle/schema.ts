@@ -190,6 +190,10 @@ export const bessConfig = mysqlTable("bess_config", {
   cooldownAcao: int("cooldownAcao").default(5).notNull(),
   maxSemTelemetria: int("maxSemTelemetria").default(30).notNull(),
   controlMode: mysqlEnum("controlMode", ["AUTO", "MANUAL"]).default("AUTO").notNull(),
+  // Compensação de overshoot BMS — DECISION-OVERSHOOT-COMPENSATION (2026-05-07).
+  // Threshold efetivo TURN_OFF AUTO = socMinDesliga + |batteryPower|*overshootFactor (pp).
+  // Aplica só com bomba ON + descarga. Default 0 = desligado (DECISION-RESPECT-CONFIG puro).
+  overshootFactor: float("overshootFactor").default(0).notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 

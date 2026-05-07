@@ -91,7 +91,12 @@ export async function getSiteRuntimeState(slug: string): Promise<SiteRuntimeStat
  *   2. Sem SOC — não age (caller emite ALERT separadamente).
  *   3. Cooldown ativo — não age.
  *   4. MANUAL — não age (exceto blackout).
- *   5. AUTO desliga — pump ON e SOC <= socMinDesliga.
+ *   5. AUTO desliga — pump ON e SOC <= socMinDesliga (+ overshoot opcional).
+ *      Compensação BMS (DECISION-OVERSHOOT-COMPENSATION, 2026-05-07): com
+ *      pumpState=ON + currentBatteryPower<0 + overshootFactor>0, antecipa o
+ *      desligamento em |batteryPower|*overshootFactor pp pra absorver o
+ *      overshoot conhecido do BMS LFP. factor=0 → comportamento idêntico ao
+ *      DECISION-RESPECT-CONFIG.
  *   6. AUTO religa — pump OFF e SOC >= socMinReliga e dentro do horário e
  *      socSource === "REAL". Religar com SOC ESTIMADO é proibido.
  *   7. Else — NONE.
@@ -119,8 +124,21 @@ export function decideAction(state: SiteRuntimeState, now: Date): Decision {
     return { kind: "NONE", reason: "Modo MANUAL — sem ação automática" };
   }
 
-  if (pumpState === "ON" && soc <= config.socMinDesliga) {
-    return { kind: "TURN_OFF", reason: `AUTO desliga: SOC ${soc.toFixed(1)}% <= socMinDesliga ${config.socMinDesliga}%` };
+  if (pumpState === "ON") {
+    // controlMode === "AUTO" implícito (passou pelo guard MANUAL acima).
+    const battPower = state.state.currentBatteryPower;
+    const descarga_kw = battPower !== null && battPower < 0 ? Math.abs(battPower) : 0;
+    const overshoot_pp = (descarga_kw > 0 && config.overshootFactor > 0)
+      ? descarga_kw * config.overshootFactor
+      : 0;
+    const threshold_efetivo = config.socMinDesliga + overshoot_pp;
+
+    if (soc <= threshold_efetivo) {
+      const reason = overshoot_pp > 0
+        ? `AUTO desliga: SOC ${soc.toFixed(1)}% <= ${threshold_efetivo.toFixed(1)}% (socMinDesliga ${config.socMinDesliga} + overshoot ${overshoot_pp.toFixed(1)}pp [descarga ${descarga_kw.toFixed(1)}kW × factor ${config.overshootFactor}])`
+        : `AUTO desliga: SOC ${soc.toFixed(1)}% <= socMinDesliga ${config.socMinDesliga}%`;
+      return { kind: "TURN_OFF", reason };
+    }
   }
 
   if (pumpState === "OFF" && soc >= config.socMinReliga) {
