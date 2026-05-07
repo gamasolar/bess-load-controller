@@ -119,6 +119,7 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 | 2026-04-29 | MVP v2 + features adaptativas | Implementado control-engine + poll-scheduler. Adicionados 3 commits adaptativos: `cf18fab` (projeção SOC futuro), `8196dfc` (ETA-based polling), `dc3a52e` (skip getInverterRealKpi). Cada um tentou mitigar incidente do dia anterior. |
 | 2026-04-30 | Incidente Barragem | Flapping da bomba (4 ciclos ON/OFF em 45min) + storm de 407 (308 em 24h) + 30min sem visibilidade de PV/load. Causas: histerese assimétrica entre TURN_OFF projetivo e TURN_ON literal; watchdog antecipava polls quebrando rate limit do Huawei. |
 | 2026-05-01 | Refactor de reversão | `DECISION-RESPECT-CONFIG.md` (Fernando) decidiu reverter ao MVP. Commits: `8c90eb7` (skip), `3c8611d` (projeção+margem), `55ab367` (ETA+watchdog), `72eb31a` (soc-estimator filtra por estado da bomba e retorna null sem histórico). 61 testes unitários verdes. |
+| 2026-05-07 | Sessão extensa (8h+) | (a) Diagnóstico do incidente 05/02 (Black Start manual presencial — Auto Black Start nunca funcionou desde commissioning); descoberta arquitetural: LUNA2000-215-2S10 + SmartLogger3000 sem STS/Backup Box é arquitetura on-grid Huawei sendo operada off-grid puro. (b) INV1 da Barragem trocado fisicamente (novo devId `1000000055696640`, ESN `6T2529034582`); DB atualizado com 2 inversores ativos. (c) Rate limit FusionSolar: `API_CALL_DELAY_MS` 10s→70s (separa janelas `getBatteryRealKpi` e `getInverterRealKpi`). (d) Stage 1/2 polling implementado e revertido conscientemente (latência 1min < ruído BMS de 4pp = 25× maior). (e) NOPASSWD sudoers configurado (`gama` → `systemctl restart bess-dashboard` sem senha). (f) Feature DECISION-OVERSHOOT-COMPENSATION implementada em 6 etapas atômicas (schema → decideAction → log → UI → testes → validação): coluna `overshootFactor` adicionada, lógica de compensação proporcional `socMinDesliga + |batteryPower|*factor` aplicada APENAS na regra TURN_OFF AUTO, log condicional `[ControlEngine]` em poll-scheduler, campo configurável em `ConfigModalV2`, 5 testes novos (34/34 passing em control-engine), CLAUDE.md atualizado. (g) Investigação retroativa do TURN_OFF de 05/07 07:55 (SOC=20 com smd=22) revelou padrão NÃO previsto: overshoot do BMS LFP ocorre DURANTE a operação (não só pós-OFF como hipótese original assumia), invalidando parcialmente a fórmula linear `|bat|*factor`. Decisão final: feature fica dormente (`factor=0` nas duas plantas), disponível pra ativar quando houver dados melhores. (h) Investigação de histerese matinal (30 dias): `socMinReliga=35` atinge em 93% dos dias mas atrasa religa pra >9h em 5/6 casos — viola restrição operacional do operador (bomba precisa ligar até 8-9h). Decisão: manter Barragem em 20/30 conforme configurado pelo operador. (i) Conta secundária `projetos@gamasolar.com.br` (`userId=13`) identificada como segunda conta admin do operador (legítima). |
 | (futuro) | Caminho 2 | Modbus TCP direto no SmartLogger 3000 — depende de visita técnica. |
 
 ---
@@ -166,11 +167,15 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 - **Polling fixo** 15min (intervaloPadrao) ou 1min (intervaloCritico em zona crítica)
 - **Coulomb counting** fallback funcional se API offline > 30min com histórico ≥ 6 leituras pós-manobra
 - **`triggerSitePoll`** força reagendamento imediato após mudança de modo/config/comando manual
+- **INV1 da Barragem corrigido no DB** (2026-05-07): trocado fisicamente, `fusionsolarInverterIds` atualizado pra `["1000000055696640","1000000054174515"]` — 2 inversores ativos somando PV correto.
+- **`API_CALL_DELAY_MS=70s`** (2026-05-07) mitiga rate limit Huawei: `getDevRealKpi` é 1 call/janela rolante 60s POR ENDPOINT, e battery+inverter usam o mesmo endpoint. 70s = 60s da janela + 10s de margem clock-skew.
+- **Feature de compensação de overshoot BMS** (2026-05-07) implementada e dormente: campo `bess_config.overshootFactor` com default 0; ativo só com factor>0 via UI. Ver §14.
 
 ❌ **Não funciona ainda (pendente):**
 - Telegram notifications → falta `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
 - Sonoff no Piscinão (não existe hardware ainda)
 - Tela de "trocar minha senha" (não foi implementada — workaround é via SQL com bcrypt)
+- **Auto Black Start nunca funcionou desde commissioning.** Arquitetura LUNA2000-215-2S10 + SmartLogger3000 sem STS/Backup Box é on-grid pela Huawei, sendo operada off-grid pura. Hipótese: cabeamento Enable+/Enable- ausente OU hardware incompleto pra essa modalidade. Black Start precisou ser feito manualmente presencial em 2026-05-02.
 
 ⚠️ **Conhecidos & não-resolvidos:**
 - Mosquitto config duplicada em `srv769185` (`/etc/mosquitto/conf.d/bess.conf` duplica `password_file` e `persistence_location`). Broker subiu na raspa; pode não voltar em próximo reboot daquele servidor.
@@ -178,6 +183,9 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 - Sonoff atual é **Sonoff Basic**, sem medição de energia (esperado-se POWR316D pelo código). Ligar/desligar funciona; telemetria de potência não vem.
 - `[MqttSync] DIVERGÊNCIA barragem: sistema=on sonoff=OFF` aparece em log — resíduo de testes manuais antigos. MqttSync auto-corrige no próximo ciclo.
 - Pasta `client/public/__manus__/debug-collector.js` (25KB) era resíduo Manus — **já removida** de `dist/` mas pode voltar se rebuildar do `client/`. Removí-la também de `client/public/` no próximo deploy.
+- **BMS LFP apresenta dois fenômenos de overshoot:** (1) pós-desligamento clássico ~4pp; (2) durante operação prolongada em SOC baixo, saltos de 2-3pp em <3min — fenômeno (2) NÃO é capturado pela fórmula linear `|bat|*factor` da feature implementada. Documentado em investigação retroativa do TURN_OFF 2026-05-07 07:55.
+- **Bug NaN em `server/fusionsolar.ts:397`** quando BMS retorna `ch_discharge_power=undefined` em proteção. Sistema fica cego pra readings durante proteção do BMS.
+- **Operador opera com duas contas admin** (`userId=1` `fernando@` e `userId=13` `projetos@`). Ambas legítimas. Considera consolidar ou diferenciar nomes.
 
 ---
 
@@ -195,23 +203,39 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 
 2. **Trocar senha MySQL `bess_user`** que apareceu em chat. Guia em §8 abaixo.
 
+3. **Fix bug NaN em `fusionsolar.ts:397`.** Quando BMS entra em proteção, `ch_discharge_power=undefined` faz a fórmula `-undefined/1000 = NaN` e o sistema fica cego pra readings. Adicionar guard `?? null` antes da divisão. Sem isso, episódios de proteção BMS deixam o painel sem telemetria.
+
+4. **Implementar `getAlarmList` polling periódico Huawei (5-10min) → `bess_alarms` com prefixo `HUAWEI_`.** Hoje só capturamos rate-limit; alarmes operacionais da Huawei (sobretemperatura, falha de inversor, BMS warning) não chegam. Endpoint já existe em `server/fusionsolar.ts:538`, falta integrar no scheduler.
+
+5. **Implementar alertas Telegram/WhatsApp via Evolution API:** telemetria parada >30min, Sonoff offline >15min, SOC < threshold. Hoje sintoma de proteção BMS só descoberto a posteriori via log inspection.
+
+6. **Abrir chamado Huawei Partners sobre Auto Black Start** em LUNA2000-215-2S10 + SmartLogger3000 sem STS/Backup Box. SN `BT25A1551919`, FW `V200R024C00SPC410`. Modalidade off-grid pura nunca operou Auto Black Start desde commissioning — confirmar se faltou cabeamento Enable+/Enable- ou se hardware é insuficiente.
+
 ### 🟡 Importantes (não bloqueiam mas são qualidade)
 
-3. **Mosquitto config duplicada em `srv769185`.** Cuidar antes de qualquer reboot daquela máquina.
+7. **Mosquitto config duplicada em `srv769185`.** Cuidar antes de qualquer reboot daquela máquina.
 
-4. **Subir `intervaloCritico` na UI de 1min pra 2min (Barragem).** Em zona crítica com 1min × 2 calls/poll, estoura rate limit do Huawei (1 call por janela rolante de 60s, por endpoint, e `getBattery` + `getInverter` usam o MESMO endpoint `/getDevRealKpi`). Resultado: pv/load=NULL durante zona crítica + 407 nos logs. Fix da UI: subir `intervaloCritico` pra 2min. Custo: latência detecção sobe de 30s pra 60s mediano (~0.2pp em SOC ≈ irrelevante). **Não readicionar skip de inverter no código.**
+8. **Subir `intervaloCritico` na UI de 1min pra 2min (Barragem).** Em zona crítica com 1min × 2 calls/poll, estoura rate limit do Huawei (1 call por janela rolante de 60s, por endpoint, e `getBattery` + `getInverter` usam o MESMO endpoint `/getDevRealKpi`). Resultado: pv/load=NULL durante zona crítica + 407 nos logs. Fix da UI: subir `intervaloCritico` pra 2min. Custo: latência detecção sobe de 30s pra 60s mediano (~0.2pp em SOC ≈ irrelevante). **Não readicionar skip de inverter no código.**
 
-5. **Bug raiz `loadStatus` dessincronizado pós-blackout** (`mqtt-sync.ts`). Após queda de energia, Sonoff volta em OFF mas `bess_state.loadStatus` continua ON. Alarmes DIVERGENCE abrem/fecham inconsistentemente. mqtt-sync auto-converge no próximo ciclo, mas timing/correção precisam ser auditados. **Não causado nem resolvido pelo refactor de 2026-05-01** — endereçar separadamente.
+9. **Bug raiz `loadStatus` dessincronizado pós-blackout** (`mqtt-sync.ts`). Após queda de energia, Sonoff volta em OFF mas `bess_state.loadStatus` continua ON. Alarmes DIVERGENCE abrem/fecham inconsistentemente. mqtt-sync auto-converge no próximo ciclo, mas timing/correção precisam ser auditados. **Não causado nem resolvido pelo refactor de 2026-05-01** — endereçar separadamente.
+
+10. **Reconstruir histórico do drizzle-kit** pra refletir migrations ad-hoc aplicadas (`0009_add_password_hash`, `0011_users_invitations`, `0012_intervalo_noturno`, `0013_overshoot_factor`). Atualmente `_journal.json` rastreia só até `0010_mvp_v2_schema`, então `drizzle-kit generate` produz diff inflado (re-cria tabelas/colunas que já existem). Não bloqueia operação — time aplica SQL direto via `mysql` — mas dificulta uso futuro de `drizzle-kit` pra mudanças de schema. Estimativa: 1-2h em sprint específico de limpeza técnica, fora de pressão operacional.
+
+11. **Corrigir/excluir 31 testes integração pré-existentes quebrados:** `bess.test.ts`, `energy-trend.test.ts`, `fusionsolar.test.ts`, `manual-soc.test.ts`, `reports.test.ts`. Necessitam setup de mocks de DB/env que não estão configurados. Não bloqueiam operação mas confundem CI/CD futuro. Estado em 2026-05-07: 206/237 passing, 31 falhando.
+
+12. **Validação da feature overshoot compensation** (`DECISION-OVERSHOOT-COMPENSATION.md`): se ativar `overshootFactor>0`, coletar dados durante janela do doc (até 2026-05-21). **Atenção:** investigação retroativa de 2026-05-07 invalidou parcialmente a hipótese central (overshoot ocorre DURANTE operação, não só pós-OFF) — feature pode não ser ativada de fato. Decidir baseado em dados quando aparecer SOC baixo em condições controladas.
 
 ### 🟢 Médio prazo
 
-6. **Visita técnica à Barragem** pra: (a) habilitar Modbus TCP no SmartLogger 3000 (firmware V300R024C10SPC211 confirmado-suporta), (b) instalar Pi/Teltonika com tunnel reverso, (c) migrar SOC para leitura Modbus direta (Caminho 2 = solução definitiva pra rate limit).
-7. **Adicionar Sonoff (POWR316D) no Piscinão.**
-8. **Trocar Sonoff Basic da Barragem por POWR316D** pra ter medição de potência da bomba.
-9. **Página de "Alterar senha"** no frontend (atual é via SQL).
-10. **Tela mostrando SOC estimado vs real** com badge de "fresh há X min" (depende de Caminho 1).
-11. **Export CSV** de leituras para calibração offline.
-12. **Investigar `[Notification] Telegram returned 401`** mesmo com TELEGRAM_BOT_TOKEN vazio. O `notification.ts` deveria fazer return early. Provavelmente bug no caminho de checagem — inspecionar log e corrigir.
+13. **Visita técnica à Barragem** pra: (a) habilitar Modbus TCP no SmartLogger 3000 (firmware V300R024C10SPC211 confirmado-suporta), (b) instalar Pi/Teltonika com tunnel reverso, (c) migrar SOC para leitura Modbus direta (Caminho 2 = solução definitiva pra rate limit).
+14. **Adicionar Sonoff (POWR316D) no Piscinão.**
+15. **Trocar Sonoff Basic da Barragem por POWR316D** pra ter medição de potência da bomba.
+16. **Página de "Alterar senha"** no frontend (atual é via SQL).
+17. **Tela mostrando SOC estimado vs real** com badge de "fresh há X min" (depende de Caminho 1).
+18. **Export CSV** de leituras para calibração offline.
+19. **Investigar `[Notification] Telegram returned 401`** mesmo com TELEGRAM_BOT_TOKEN vazio. O `notification.ts` deveria fazer return early. Provavelmente bug no caminho de checagem — inspecionar log e corrigir.
+20. **Considerar separar Starlink + roteador + auxiliares para circuito dedicado** (painel + bateria 100Ah, ~R$3-5k). Elimina ~150W consumo 24/7 da bateria principal e mantém observabilidade quando BESS entra em proteção (BMS desliga inversor → painel/internet caem juntos).
+21. **Considerar consolidar contas admin do operador** (`userId=1` `fernando@gamasolar.com.br` e `userId=13` `projetos@gamasolar.com.br`) ou diferenciar nomes pra clareza nos logs (atualmente `bess_actions.metadata.userName` mostra "Fernando Lobo Praes" vs "Gama Solar" — segunda é genérica demais pra auditoria).
 
 ---
 
@@ -464,10 +488,19 @@ sudo systemctl restart cloudflared
 **Antes de modificar `decideAction`, `pickPollInterval` ou `pollSite`:** consultar `DECISION-RESPECT-CONFIG.md`. Mudanças nesses caminhos críticos exigem autorização explícita do operador, com diff mostrado antes da edição.
 
 **Caminhos críticos protegidos:**
-- `server/control-engine.ts:decideAction` — lógica linear de TURN_ON/TURN_OFF. Sem projeção, sem margem.
+- `server/control-engine.ts:decideAction` — lógica linear de TURN_ON/TURN_OFF. Sem projeção, sem margem. **Exceção controlada (2026-05-07):** regra TURN_OFF AUTO recebeu bloco de compensação proporcional do overshoot BMS LFP — ver bloco abaixo.
 - `server/poll-scheduler.ts:pickPollInterval` — cadência fixa por regras simples. Sem ETA, sem watchdog antecipando.
 - `server/poll-scheduler.ts:pollSite` — sempre coleta `getBatteryRealKpi` + (com pause 5s) `getInverterRealKpi`. Sem skip.
 - `server/soc-estimator.ts` — fallback Coulomb counting; retorna `null` se histórico insuficiente pós-manobra (não SOC velho).
+
+**Exceção controlada — DECISION-OVERSHOOT-COMPENSATION.md (2026-05-07):**
+
+`decideAction` ganhou compensação proporcional do overshoot do BMS LFP na regra de TURN_OFF AUTO. Quando bomba=ON + `currentBatteryPower<0` + `overshootFactor>0`, antecipa o desligamento em `|currentBatteryPower| × overshootFactor` pp pra absorver o salto pra baixo que o BMS faz quando descarga cessa.
+
+- **Default:** `overshootFactor=0` na UI = feature desligada → comportamento idêntico ao `DECISION-RESPECT-CONFIG`. Operador habilita explicitamente em `/configuracoes` → "Compensação de overshoot".
+- **Validação:** período de observação até **2026-05-21** (14 dias). Critérios de aceitação e reversão na seção 6 do doc. Reverter = setar `overshootFactor=0` na UI. **Sem rollback de código necessário.**
+- **Não-negociáveis preservados:** sem ETA, sem projeção de SOC, sem compensação no TURN_ON, sem watchdog. Só TURN_OFF AUTO com fórmula determinística e configurável.
+- **Auditoria:** cada TURN_OFF compensado registra a fórmula completa em `bess_actions.reason` (`socMinDesliga X + overshoot Ypp [descarga WkW × factor Z]`). Log adicional `[ControlEngine]` no poll quando `factor>0`.
 
 ---
 
