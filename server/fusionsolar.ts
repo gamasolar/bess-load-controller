@@ -112,7 +112,7 @@ export interface TelemetryResult {
 
 // ─── Rate Limit Helpers ─────────────────────────────────────
 
-const API_CALL_DELAY_MS = 10_000; // 10 seconds between API calls (respects 1 req/min rule)
+const API_CALL_DELAY_MS = 70_000; // 70s between calls — Huawei `getDevRealKpi` é 1/min POR ENDPOINT, e bat+inv batem no mesmo endpoint. 60s + 10s de margem pra clock skew.
 const BACKOFF_BASE_MS = 60_000;   // 1 minute base backoff on 407
 const MAX_BACKOFF_MS = 600_000;   // 10 minutes max backoff
 
