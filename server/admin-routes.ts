@@ -110,11 +110,14 @@ export const invitationsRouter = router({
   create: adminProcedure
     .input(z.object({
       role: z.enum(["user", "admin"]),
-      expiresInDays: z.number().int().min(1).max(30).default(7),
+      expiresAt: z.string().datetime().nullable(),
     }))
     .mutation(async ({ input, ctx }) => {
       const token = genToken();
-      const expiresAt = new Date(Date.now() + input.expiresInDays * 86400_000);
+      const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
+      if (expiresAt && expiresAt.getTime() <= Date.now()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Data de expiração precisa ser futura." });
+      }
       await createInvitation({
         token, role: input.role,
         createdById: ctx.user.id,

@@ -40,11 +40,18 @@ function inviteUrl(token: string): string {
   return `${window.location.origin}/convite/${token}`;
 }
 
+function defaultExpiryDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
 function CreateInvite() {
   const utils = trpc.useUtils();
   const [open, setOpen] = useState(false);
   const [role, setRole] = useState<Role>("user");
-  const [days, setDays] = useState(7);
+  const [expiryDate, setExpiryDate] = useState(defaultExpiryDate());
+  const [unlimited, setUnlimited] = useState(false);
   const [generated, setGenerated] = useState<string | null>(null);
 
   const create = trpc.invitations.create.useMutation({
@@ -56,8 +63,10 @@ function CreateInvite() {
   });
 
   const reset = () => {
-    setRole("user"); setDays(7); setGenerated(null);
+    setRole("user"); setExpiryDate(defaultExpiryDate()); setUnlimited(false); setGenerated(null);
   };
+
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   const url = generated ? inviteUrl(generated) : "";
 
@@ -94,8 +103,24 @@ function CreateInvite() {
                 </p>
               </div>
               <div>
-                <Label htmlFor="days">Validade (dias)</Label>
-                <Input id="days" type="number" min={1} max={30} value={days} onChange={(e) => setDays(Number(e.target.value))} className="mt-1.5" />
+                <Label htmlFor="expiry">Expira em</Label>
+                <Input
+                  id="expiry"
+                  type="date"
+                  min={todayIso}
+                  value={expiryDate}
+                  disabled={unlimited}
+                  onChange={(e) => setExpiryDate(e.target.value)}
+                  className="mt-1.5"
+                />
+                <label className="flex items-center gap-2 mt-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={unlimited}
+                    onChange={(e) => setUnlimited(e.target.checked)}
+                  />
+                  Sem expiração
+                </label>
               </div>
             </div>
           ) : (
@@ -121,7 +146,15 @@ function CreateInvite() {
             {!generated ? (
               <>
                 <Button variant="outline" onClick={() => setOpen(false)} disabled={create.isPending}>Cancelar</Button>
-                <Button onClick={() => create.mutate({ role, expiresInDays: days })} disabled={create.isPending}>
+                <Button
+                  onClick={() => create.mutate({
+                    role,
+                    expiresAt: unlimited
+                      ? null
+                      : new Date(`${expiryDate}T23:59:59`).toISOString(),
+                  })}
+                  disabled={create.isPending || (!unlimited && !expiryDate)}
+                >
                   {create.isPending ? "Gerando…" : "Gerar"}
                 </Button>
               </>
@@ -390,7 +423,7 @@ function InvitationsList() {
                 <Badge className={tone}>{status}</Badge>
                 <Badge variant="outline">{i.role}</Badge>
                 <span className="text-muted-foreground flex-1 truncate font-mono">{inviteUrl(i.token).slice(0, 60)}…</span>
-                <span className="text-muted-foreground">expira {fmt(i.expiresAt)}</span>
+                <span className="text-muted-foreground">{i.expiresAt ? `expira ${fmt(i.expiresAt)}` : "sem expiração"}</span>
                 {!isUsed && !isExpired && (
                   <>
                     <Button
