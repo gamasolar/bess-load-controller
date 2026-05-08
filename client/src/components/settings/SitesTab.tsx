@@ -201,7 +201,7 @@ function EditSiteDialog({ site, onClose }: { site: Site; onClose: () => void }) 
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Integrações</p>
             <div className="grid grid-cols-1 gap-3">
               <div>
-                <Label htmlFor="mqttTopic">MQTT Topic (Sonoff)</Label>
+                <Label htmlFor="mqttTopic">MQTT Topic (Automação)</Label>
                 <Input id="mqttTopic" value={form.mqttTopic} placeholder="bess/barragem/pump" onChange={(e) => setForm({ ...form, mqttTopic: e.target.value })} className="mt-1 font-mono text-xs" />
               </div>
               <div>

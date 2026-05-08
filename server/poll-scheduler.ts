@@ -227,7 +227,11 @@ async function pollSite(slug: string): Promise<void> {
       let computedLoadHealth: string | null = null;
       try {
         const fresh = await getSiteRuntimeState(slug);
-        if (fresh && process.env.LOAD_MONITOR_ENABLED === "true") {
+        // Pula load-monitor em sites read-only (sem MQTT/Sonoff) — não temos
+        // como verificar Sonoff pra cross-check, então qualquer "FAILED" é
+        // falso positivo (a "carga" do FusionSolar é o consumo da planta inteira,
+        // não da bomba específica que monitoraríamos via Sonoff).
+        if (fresh && process.env.LOAD_MONITOR_ENABLED === "true" && site.mqttTopic) {
           const decision = evaluateLoadHealth({
             state: fresh.state,
             pumpPowerCv: site.pumpPowerCv ?? 30,

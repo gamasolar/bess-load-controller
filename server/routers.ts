@@ -815,7 +815,11 @@ export const appRouter = router({
             pumpState: runtime.pumpState,
             inCriticalZone: runtime.inCriticalZone,
             cooldownRemainingMs,
-            loadHealth: runtime.state.loadHealth ?? "UNKNOWN",
+            loadHealth: runtime.site.mqttTopic
+              ? (runtime.state.loadHealth ?? "UNKNOWN")
+              // Read-only: sem Sonoff pra cross-check, mas se há consumo real (load>0)
+              // mostramos verde — igual Barragem em RUNNING_OK. Se zero, fica neutro.
+              : ((runtime.state.currentLoadPower ?? 0) > 0.1 ? "RUNNING_OK" : "OFF_OK"),
             recentLoadPower,
           },
           nextAction: decision,

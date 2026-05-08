@@ -1,5 +1,5 @@
 import { Zap, ArrowDown } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 type Zones = {
   blackout: number;
@@ -35,6 +35,8 @@ export function BatteryVisual({
 
   const charging = batteryPower !== null && batteryPower > 0.05;
   const discharging = batteryPower !== null && batteryPower < -0.05;
+
+  const gradId = `battFillGrad-${useId().replace(/:/g, "_")}`;
 
   const fillHeight = (value / 100) * 200;
   const fillY = 220 - fillHeight;
@@ -92,7 +94,7 @@ export function BatteryVisual({
 
           {/* Fill */}
           <defs>
-            <linearGradient id="battFillGrad" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={colors.fill} stopOpacity="0.95" />
               <stop offset="100%" stopColor={colors.fill} stopOpacity="0.65" />
             </linearGradient>
@@ -103,7 +105,7 @@ export function BatteryVisual({
             width="100"
             height={fillY < 26 ? fillHeight - (26 - fillY) : fillHeight}
             rx="8"
-            fill="url(#battFillGrad)"
+            fill={`url(#${gradId})`}
             style={{
               transition: "all 1s cubic-bezier(0.4,0,0.2,1)",
             }}

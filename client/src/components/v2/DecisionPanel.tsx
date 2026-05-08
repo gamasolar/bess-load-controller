@@ -91,11 +91,11 @@ export function DecisionPanel({ s }: { s: any }) {
 
 function buildInsight(s: any, now: Date): Insight {
   const isAuto = s.config.controlMode === "AUTO";
-  // Usa pumpState (= sonoffPower, estado real) em vez de loadStatus (intent),
-  // pra ficar consistente com decideAction e nunca mostrar uma ação que o
-  // engine na verdade não vai executar.
+  // Usa pumpState (= estado real do dispositivo de automação) em vez de
+  // loadStatus (intent), pra ficar consistente com decideAction e nunca mostrar
+  // uma ação que o engine na verdade não vai executar.
   const pumpState: "ON" | "OFF" | "UNKNOWN" = s.derived?.pumpState ?? "UNKNOWN";
-  const sonoffOnline: boolean = s.state.sonoffOnline ?? false;
+  const automationOnline: boolean = s.state.sonoffOnline ?? false;
   const isOn = pumpState === "ON";
   const soc: number | null = s.derived.soc;
   const cooldownMs: number = s.derived.cooldownRemainingMs ?? 0;
@@ -112,11 +112,11 @@ function buildInsight(s: any, now: Date): Insight {
     };
   }
 
-  if (pumpState === "UNKNOWN" || !sonoffOnline) {
+  if (pumpState === "UNKNOWN" || !automationOnline) {
     return {
       Icon: AlertTriangle, iconColor: "text-amber-400", tone: "warn",
-      title: "Sonoff offline",
-      subtitle: "Sem comunicação com a chave da bomba. Sistema não pode atuar até reconectar.",
+      title: "Automação offline",
+      subtitle: "Sem comunicação com o controlador da bomba. Sistema não pode atuar até reconectar.",
     };
   }
 

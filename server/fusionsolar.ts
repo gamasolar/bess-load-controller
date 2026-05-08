@@ -389,28 +389,50 @@ class FusionSolarClient {
       const data = await this.apiPost("getDevRealKpi", { devIds, devTypeId }, siteId);
       if (!data || !Array.isArray(data) || data.length === 0) return null;
 
-      const deviceData = data[0];
-      const dataItemMap = deviceData?.dataItemMap ?? {};
-
+      // Agrega N baterias do site (Piscinão tem 2; Barragem tem 1).
+      // Power: SOMA. SOC/SOH/temperatura/voltagem: MÉDIA. max_*_power: SOMA.
       // LUNA2000-215kWh não retorna battery_power; usa ch_discharge_power em watts
-      // com convenção INVERTIDA do código (positivo=descarga). Validado empiricamente
-      // 2026-04-29: 10 amostras consecutivas com SOC caindo 94→69 e ch_discharge_power
-      // sempre positivo (0.255 a 52 kW). Invertemos o sinal pra bater com a convenção
-      // interna `batteryPower < 0 = descarga` (poll-scheduler.ts:159, routers.ts:1478).
-      const rawPower = dataItemMap.battery_power ?? (
-        dataItemMap.ch_discharge_power != null ? -Number(dataItemMap.ch_discharge_power) / 1000 : undefined
-      );
+      // com convenção INVERTIDA (positivo=descarga). Validado 2026-04-29 (1 bateria,
+      // SOC caindo 94→69 e ch_discharge_power positivo). Invertemos o sinal pra
+      // bater com a convenção interna `batteryPower < 0 = descarga`.
+      let totalPower = 0; let powerCount = 0;
+      let totalSoc = 0; let socCount = 0;
+      let totalSoh = 0; let sohCount = 0;
+      let totalTemp = 0; let tempCount = 0;
+      let totalBus = 0; let busCount = 0;
+      let totalMaxCharge = 0; let totalMaxDischarge = 0;
+      let chDischargeModel: number | undefined;
+      let latestCollectTime: number | undefined;
+
+      for (const deviceData of data) {
+        const m = deviceData?.dataItemMap ?? {};
+        const rawPower = m.battery_power ?? (
+          m.ch_discharge_power != null ? -Number(m.ch_discharge_power) / 1000 : undefined
+        );
+        if (rawPower != null) { totalPower += Number(rawPower); powerCount++; }
+        if (m.battery_soc != null) { totalSoc += Number(m.battery_soc); socCount++; }
+        if (m.battery_soh != null) { totalSoh += Number(m.battery_soh); sohCount++; }
+        if (m.battery_temperature != null) { totalTemp += Number(m.battery_temperature); tempCount++; }
+        if (m.bus_voltage != null) { totalBus += Number(m.bus_voltage); busCount++; }
+        if (m.max_charge_power != null) totalMaxCharge += Number(m.max_charge_power);
+        if (m.max_discharge_power != null) totalMaxDischarge += Number(m.max_discharge_power);
+        if (m.ch_discharge_model != null && chDischargeModel === undefined) chDischargeModel = Number(m.ch_discharge_model);
+        if (deviceData.collectTime != null) {
+          const ct = Number(deviceData.collectTime);
+          if (!latestCollectTime || ct > latestCollectTime) latestCollectTime = ct;
+        }
+      }
 
       return {
-        battery_soc: dataItemMap.battery_soc != null ? Number(dataItemMap.battery_soc) : undefined,
-        battery_soh: dataItemMap.battery_soh != null ? Number(dataItemMap.battery_soh) : undefined,
-        battery_power: rawPower != null ? Number(rawPower) : undefined,
-        battery_temperature: dataItemMap.battery_temperature != null ? Number(dataItemMap.battery_temperature) : undefined,
-        bus_voltage: dataItemMap.bus_voltage != null ? Number(dataItemMap.bus_voltage) : undefined,
-        max_charge_power: dataItemMap.max_charge_power != null ? Number(dataItemMap.max_charge_power) : undefined,
-        max_discharge_power: dataItemMap.max_discharge_power != null ? Number(dataItemMap.max_discharge_power) : undefined,
-        ch_discharge_model: dataItemMap.ch_discharge_model != null ? Number(dataItemMap.ch_discharge_model) : undefined,
-        collectTime: deviceData.collectTime != null ? Number(deviceData.collectTime) : undefined,
+        battery_soc: socCount > 0 ? totalSoc / socCount : undefined,
+        battery_soh: sohCount > 0 ? totalSoh / sohCount : undefined,
+        battery_power: powerCount > 0 ? totalPower : undefined,
+        battery_temperature: tempCount > 0 ? totalTemp / tempCount : undefined,
+        bus_voltage: busCount > 0 ? totalBus / busCount : undefined,
+        max_charge_power: totalMaxCharge > 0 ? totalMaxCharge : undefined,
+        max_discharge_power: totalMaxDischarge > 0 ? totalMaxDischarge : undefined,
+        ch_discharge_model: chDischargeModel,
+        collectTime: latestCollectTime,
       };
     } catch (error) {
       console.error("[FusionSolar] getBatteryRealKpi error:", error);

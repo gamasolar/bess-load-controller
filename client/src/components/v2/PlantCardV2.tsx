@@ -5,7 +5,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Settings2, History, AlertTriangle, Eye, Maximize2, X, BarChart3 } from "lucide-react";
+import { Settings2, History, AlertTriangle, Eye, Maximize2, X, BarChart3, ChevronLeft, ChevronRight } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -64,13 +64,33 @@ function ModeToggle({ slug, mode }: { slug: string; mode: "AUTO" | "MANUAL" }) {
 
 type Status = NonNullable<ReturnType<typeof trpc.bess.getSiteStatus.useQuery>["data"]>;
 
-export function PlantCardV2({ slug }: { slug: string }) {
+export function PlantCardV2({ slug, hideExpandButton = false }: { slug: string; hideExpandButton?: boolean }) {
   const utils = trpc.useUtils();
   const { isAdmin } = useAuth();
+
+  // `activeSlug` permite a navegação por setas dentro do modo expanded:
+  // o usuário pode trocar de Piscinão pra Barragem (e vice-versa) sem fechar
+  // o overlay. Quando sai do expanded, volta pra prop `slug` original.
+  const [activeSlug, setActiveSlug] = useState(slug);
+  useEffect(() => { setActiveSlug(slug); }, [slug]);
+
   const { data, isLoading, error } = trpc.bess.getSiteStatus.useQuery(
-    { slug },
+    { slug: activeSlug },
     { refetchInterval: 30_000 },
   );
+
+  // Lista de sites pra navegação por setas no expanded.
+  const { data: allSites } = trpc.bess.sites.useQuery(undefined, {
+    refetchInterval: 60_000,
+  });
+  const slugList = (allSites ?? []).map((s) => s.slug);
+  const slugIdx = slugList.indexOf(activeSlug);
+  const hasSiblings = slugList.length > 1;
+  const navTo = (delta: number) => {
+    if (!hasSiblings || slugIdx === -1) return;
+    const next = slugList[(slugIdx + delta + slugList.length) % slugList.length];
+    setActiveSlug(next);
+  };
 
   const [confirmOpen, setConfirmOpen] = useState<null | "ON" | "OFF">(null);
   const [configOpen, setConfigOpen] = useState(false);
@@ -106,8 +126,8 @@ export function PlantCardV2({ slug }: { slug: string }) {
     onSuccess: (res) => {
       if (res.success) toast.success(res.message);
       else toast.error(res.message);
-      utils.bess.getSiteStatus.invalidate({ slug });
-      utils.bess.getActions.invalidate({ slug });
+      utils.bess.getSiteStatus.invalidate({ slug: activeSlug });
+      utils.bess.getActions.invalidate({ slug: activeSlug });
     },
     onError: (e) => toast.error(e.message),
   });
@@ -125,7 +145,7 @@ export function PlantCardV2({ slug }: { slug: string }) {
     return (
       <Card className="border-red-500/30">
         <CardContent className="p-6">
-          <p className="text-red-500 text-sm">Erro ao carregar {slug}: {error?.message ?? "site não encontrado"}</p>
+          <p className="text-red-500 text-sm">Erro ao carregar {activeSlug}: {error?.message ?? "site não encontrado"}</p>
         </CardContent>
       </Card>
     );
@@ -133,7 +153,17 @@ export function PlantCardV2({ slug }: { slug: string }) {
 
   const s = data as Status;
   const soc = s.derived.soc;
-  const socForDisplay = soc !== null ? soc : (typeof s.state.currentSoc === "number" ? s.state.currentSoc : null);
+  const lastTelemetryMs = s.state.lastTelemetryAt
+    ? new Date(s.state.lastTelemetryAt as Date | string).getTime()
+    : null;
+  const telemetryFresh =
+    lastTelemetryMs !== null && Date.now() - lastTelemetryMs < 30 * 60 * 1000;
+  const socForDisplay =
+    soc !== null
+      ? soc
+      : telemetryFresh && typeof s.state.currentSoc === "number"
+        ? s.state.currentSoc
+        : null;
   const isOn = s.derived.pumpState === "ON";
   const noHardware = !s.site.mqttTopic;
   const cooldownActive = s.derived.cooldownRemainingMs > 0;
@@ -162,14 +192,38 @@ export function PlantCardV2({ slug }: { slug: string }) {
       <img
         src="/logo-full.png"
         alt="Gama Solar"
-        className="absolute top-3 md:top-5 left-1/2 -translate-x-1/2 h-5 md:h-7 object-contain opacity-85 z-10 pointer-events-none"
+        className="absolute top-3 md:top-5 right-3 md:right-5 h-5 md:h-7 object-contain opacity-85 z-10 pointer-events-none"
         onError={(e) => { e.currentTarget.style.display = "none"; }}
       />
+    )}
+    {/* Navegação por setas no modo expandido — só aparecem quando há mais de
+        um site cadastrado. Trocam o slug ativo sem fechar o overlay. */}
+    {expanded && hasSiblings && (
+      <>
+        <button
+          onClick={() => navTo(-1)}
+          aria-label="Site anterior"
+          className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-20 w-12 h-12 md:w-14 md:h-14 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur border border-white/10 flex items-center justify-center text-white transition"
+        >
+          <ChevronLeft className="w-6 h-6 md:w-7 md:h-7" />
+        </button>
+        <button
+          onClick={() => navTo(1)}
+          aria-label="Próximo site"
+          className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 z-20 w-12 h-12 md:w-14 md:h-14 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur border border-white/10 flex items-center justify-center text-white transition"
+        >
+          <ChevronRight className="w-6 h-6 md:w-7 md:h-7" />
+        </button>
+      </>
     )}
     <Card
       className={
         expanded
-          ? "border-white/10 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative w-full max-w-[1550px] md:text-[1.13em] py-0 max-h-full"
+          // Sem `max-h-full`: card cresce com o conteúdo. O wrapper (linha 162)
+          // já tem `overflow-y-auto`, então em viewports menores que o conteúdo,
+          // o usuário rola dentro do overlay. Sem isso, `items-center` + max-h
+          // cortavam topo E base, e o ZoneBar do meio "atravessava" bateria/bomba.
+          ? "border-white/10 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative w-full max-w-[1550px] md:text-[1.13em] py-0"
           : "border-white/5 bg-gradient-to-br from-card to-card/60 backdrop-blur overflow-hidden relative py-0 h-full"
       }
     >
@@ -214,14 +268,18 @@ export function PlantCardV2({ slug }: { slug: string }) {
                 <Settings2 className="w-4 h-4" />
               </Button>
             )}
-            <Button
-              variant="ghost" size="icon" className="h-8 w-8"
-              aria-label={expanded ? "Sair de tela cheia" : "Tela cheia"}
-              title={expanded ? "Sair do modo TV (Esc)" : "Modo TV / monitor cheio"}
-              onClick={() => setExpanded(!expanded)}
-            >
-              {expanded ? <X className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-            </Button>
+            {/* Em /tablet o botão fica oculto: a página tem fullscreen
+                page-level próprio que mantém o swipe entre cards. */}
+            {!hideExpandButton && (
+              <Button
+                variant="ghost" size="icon" className="h-8 w-8"
+                aria-label={expanded ? "Sair de tela cheia" : "Tela cheia"}
+                title={expanded ? "Sair do modo TV (Esc)" : "Modo TV / monitor cheio"}
+                onClick={() => setExpanded(!expanded)}
+              >
+                {expanded ? <X className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </Button>
+            )}
             <Button
               variant="ghost" size="icon" className="h-8 w-8"
               aria-label="Operação da bomba"
@@ -243,24 +301,32 @@ export function PlantCardV2({ slug }: { slug: string }) {
                 <Eye className="w-4 h-4" />
               </span>
             )}
-            {/* Botão AUTO/MANUAL fixado na extremidade direita, separado por gap maior */}
-            <div className="ml-2">
-              {isAdmin ? (
-                <ModeToggle slug={slug} mode={s.config.controlMode as "AUTO" | "MANUAL"} />
-              ) : (
-                <span
-                  className="h-8 px-3 inline-flex items-center text-[11px] font-mono font-bold tracking-wider rounded-md border border-zinc-700 bg-zinc-800/40 text-zinc-300"
-                  title={`Modo de controle atual: ${s.config.controlMode} (somente-leitura)`}
-                >
-                  {s.config.controlMode}
-                </span>
-              )}
-            </div>
+            {/* Botão AUTO/MANUAL — só aparece quando há automação (mqttTopic).
+                Sites read-only não têm nada pra alternar entre auto/manual. */}
+            {s.site.mqttTopic && (
+              <div className="ml-2">
+                {isAdmin ? (
+                  <ModeToggle slug={activeSlug} mode={s.config.controlMode as "AUTO" | "MANUAL"} />
+                ) : (
+                  <span
+                    className="h-8 px-3 inline-flex items-center text-[11px] font-mono font-bold tracking-wider rounded-md border border-zinc-700 bg-zinc-800/40 text-zinc-300"
+                    title={`Modo de controle atual: ${s.config.controlMode} (somente-leitura)`}
+                  >
+                    {s.config.controlMode}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Bateria + Motor lado a lado (padrão único — desktop, tablet e mobile) */}
-        <div className="flex flex-col items-center gap-3">
+        {/* Bateria + Motor lado a lado (padrão único — desktop, tablet e mobile).
+            Em sites sem automação (e fora do modo expandido) o bloco expande
+            verticalmente (flex-1) e centraliza no eixo vertical, ocupando o
+            espaço onde estaria o botão da bomba. No expanded a CardContent
+            já é flex-1, e adicionar flex-1 aqui dentro causa sobreposição
+            do ZoneBar com bateria/bomba. */}
+        <div className={`flex flex-col items-center gap-3 ${!s.site.mqttTopic && !expanded ? "flex-1 justify-center" : ""}`}>
           <div className="flex flex-row items-start justify-center gap-6 md:gap-8">
             <BatteryVisual
               soc={socForDisplay}
@@ -284,27 +350,31 @@ export function PlantCardV2({ slug }: { slug: string }) {
           {/* Zones + decisão ocupam toda a largura abaixo */}
           <div className="w-full space-y-2.5">
             <ZoneBar soc={socForDisplay} zones={zones} />
-            <DecisionPanel s={s} />
+            {s.site.mqttTopic && <DecisionPanel s={s} />}
           </div>
         </div>
 
-        {/* Weather (acima do botão de ligar) */}
+        {/* Weather */}
         <div className="flex justify-end">
-          <WeatherWidget slug={slug} />
+          <WeatherWidget slug={activeSlug} />
         </div>
 
-        {/* Pump */}
-        <div className="border-t border-white/5 pt-3">
-          <PumpStatus
-            pumpState={s.derived.pumpState as "ON" | "OFF" | "UNKNOWN"}
-            noHardware={noHardware}
-            readOnly={!isAdmin}
-            cooldownActive={cooldownActive}
-            cooldownRemainingMs={s.derived.cooldownRemainingMs}
-            busy={command.isPending}
-            onToggle={() => setConfirmOpen(isOn ? "OFF" : "ON")}
-          />
-        </div>
+        {/* Pump — só aparece quando há automação (mqttTopic). Sites read-only
+            não têm hardware pra ligar/desligar; sem o bloco o layout fecha
+            naturalmente (sem espaço vago). */}
+        {s.site.mqttTopic && (
+          <div className="border-t border-white/5 pt-3">
+            <PumpStatus
+              pumpState={s.derived.pumpState as "ON" | "OFF" | "UNKNOWN"}
+              noHardware={noHardware}
+              readOnly={!isAdmin}
+              cooldownActive={cooldownActive}
+              cooldownRemainingMs={s.derived.cooldownRemainingMs}
+              busy={command.isPending}
+              onToggle={() => setConfirmOpen(isOn ? "OFF" : "ON")}
+            />
+          </div>
+        )}
 
         {/* Blackout banner */}
         {inBlackout && (
@@ -346,7 +416,7 @@ export function PlantCardV2({ slug }: { slug: string }) {
             <AlertDialogAction
               onClick={() => {
                 if (confirmOpen) {
-                  command.mutate({ slug, action: confirmOpen.toLowerCase() as "on" | "off" });
+                  command.mutate({ slug: activeSlug, action: confirmOpen.toLowerCase() as "on" | "off" });
                   setConfirmOpen(null);
                 }
               }}
@@ -357,9 +427,9 @@ export function PlantCardV2({ slug }: { slug: string }) {
         </AlertDialogContent>
       </AlertDialog>
 
-      <ConfigModalV2 open={configOpen} onOpenChange={setConfigOpen} slug={slug} initial={s.config} />
-      <HistoryModal open={historyOpen} onOpenChange={setHistoryOpen} slug={slug} siteName={s.site.name} />
-      <PumpStatsModal open={statsOpen} onOpenChange={setStatsOpen} slug={slug} siteName={s.site.name} />
+      <ConfigModalV2 open={configOpen} onOpenChange={setConfigOpen} slug={activeSlug} initial={s.config} />
+      <HistoryModal open={historyOpen} onOpenChange={setHistoryOpen} slug={activeSlug} siteName={s.site.name} />
+      <PumpStatsModal open={statsOpen} onOpenChange={setStatsOpen} slug={activeSlug} siteName={s.site.name} />
     </Card>
     </div>
   );

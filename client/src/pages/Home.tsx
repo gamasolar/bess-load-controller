@@ -7,9 +7,7 @@ export default function Home() {
     refetchInterval: 60_000,
   });
 
-  const visibleSites = (sites ?? []).filter(
-    (s) => s.fusionsolarConfigured || !!s.mqttTopic,
-  );
+  const visibleSites = sites ?? [];
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto px-3 md:px-0 py-4">

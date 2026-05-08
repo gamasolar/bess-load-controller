@@ -6,6 +6,7 @@ import Home from "@/pages/Home";
 import Login from "@/pages/Login";
 import Settings from "@/pages/Settings";
 import AcceptInvitation from "@/pages/AcceptInvitation";
+import Tablet from "@/pages/Tablet";
 
 export default function App() {
   const [location] = useLocation();
@@ -23,6 +24,15 @@ export default function App() {
     return (
       <ThemeProvider defaultTheme="dark">
         <AcceptInvitation />
+        <Toaster />
+      </ThemeProvider>
+    );
+  }
+
+  if (location === "/tablet") {
+    return (
+      <ThemeProvider defaultTheme="dark">
+        <Tablet />
         <Toaster />
       </ThemeProvider>
     );
