@@ -273,17 +273,14 @@ class MqttTasmotaClient {
           device.power = state;
           device.online = true;
 
-          // Resolve pending command
+          // Resolve pending command — só confirma sucesso ao ver o estado esperado.
+          // Mensagens com o estado anterior (eco de queryStatus em voo, ou echo do Tasmota
+          // antes de processar o comando) são ignoradas; deixa o timeout decidir falha.
           const pending = this.pendingCommands.get(deviceTopic);
-          if (pending) {
+          if (pending && state === pending.action) {
             clearTimeout(pending.timeout);
             this.pendingCommands.delete(deviceTopic);
-            const expected = pending.action;
-            if (state === expected) {
-              pending.resolve({ success: true, message: `Sonoff ${deviceTopic}: ${state === "ON" ? "LIGADO" : "DESLIGADO"} com sucesso.` });
-            } else {
-              pending.resolve({ success: false, message: `Sonoff ${deviceTopic}: esperado ${expected}, recebido ${state}.` });
-            }
+            pending.resolve({ success: true, message: `Sonoff ${deviceTopic}: ${state === "ON" ? "LIGADO" : "DESLIGADO"} com sucesso.` });
           }
         }
       } else if (suffix === "RESULT") {
