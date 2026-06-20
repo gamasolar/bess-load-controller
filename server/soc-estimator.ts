@@ -15,7 +15,7 @@
 
 import { eq, and, gte, desc } from "drizzle-orm";
 import { getDb } from "./db";
-import { bessReadings, bessState } from "../drizzle/schema";
+import { bessReadings, bessState, bessSites } from "../drizzle/schema";
 
 const MIN_VALID_READINGS = 6;
 const HISTORY_WINDOW_HOURS = 2;
@@ -109,6 +109,114 @@ export async function calculateDischargeRate(siteId: number): Promise<number | n
   return computeRate(filtered);
 }
 
+/** Descarga mínima (kW) pra considerar a projeção stale relevante. Abaixo
+ *  disso o drift é desprezível e respeitamos o SOC reportado literalmente. */
+const STALE_MIN_DISCHARGE_KW = 1;
+
+/**
+ * PURA. Detecta um snapshot STALE reentregue pela FusionSolar e projeta o
+ * SOC real via Coulomb counting.
+ *
+ * Contexto (incidente Barragem 2026-06-19): a "real-time KPI" da Huawei só
+ * atualiza ~5min no servidor deles, mas pollamos a cada 2min na zona crítica.
+ * Resultado: recebemos o MESMO retrato (ex.: SOC=26%, Bat=-50.652kW) 3-4×
+ * seguidas enquanto a bateria de verdade continua drenando. O SOC reportado
+ * "trava" 1pp acima do gatilho de desligar e a bomba só desliga quando a
+ * própria proteção da bateria já cortou tudo (SOC despenca 26→9 num poll).
+ *
+ * Comprovação de stale: `batteryPower` idêntico ao milésimo entre o snapshot
+ * atual e a leitura persistida mais recente. Telemetria viva nunca repete o
+ * float exato — só cache reentregue. Quando stale + descarregando, integramos
+ * a potência (ainda válida; a bomba não mudou de estado) sobre o tempo
+ * congelado e devolvemos o SOC projetado (menor que o reportado).
+ *
+ * Retorna null quando NÃO há staleness comprovado (telemetria variando) ou
+ * sem descarga relevante — aí o SOC reportado é respeitado literalmente
+ * (DECISION-RESPECT-CONFIG). Conservador por construção: só puxa o SOC pra
+ * BAIXO, nunca pra cima.
+ */
+export function projectStaleSoc(params: {
+  currentSoc: number;
+  currentBatteryKw: number | null;
+  readingsDesc: Array<{ soc: number | null; batteryPower: number | null; createdAt: Date }>;
+  capacityKwh: number;
+  nowMs: number;
+}): { soc: number; staleMin: number; ratePpPerMin: number } | null {
+  const { currentSoc, currentBatteryKw, readingsDesc, capacityKwh, nowMs } = params;
+
+  // Só projeta em descarga relevante. Idle/carga → respeita reportado.
+  if (currentBatteryKw === null || currentBatteryKw > -STALE_MIN_DISCHARGE_KW) return null;
+  if (!(capacityKwh > 0)) return null;
+  if (readingsDesc.length === 0) return null;
+
+  const samePower = (a: number | null) =>
+    a !== null && Math.abs(a - currentBatteryKw) < 1e-6;
+
+  // O snapshot atual precisa ser idêntico à leitura persistida mais recente.
+  const newest = readingsDesc[0];
+  if (!samePower(newest.batteryPower) || newest.soc !== currentSoc) return null;
+
+  // Anchor = leitura mais antiga do "run" de duplicados — quando o valor
+  // congelou. staleMin = há quanto tempo o snapshot está parado.
+  let anchorMs = newest.createdAt.getTime();
+  for (const r of readingsDesc) {
+    if (samePower(r.batteryPower) && r.soc === currentSoc) {
+      anchorMs = r.createdAt.getTime();
+    } else {
+      break;
+    }
+  }
+
+  const staleMin = (nowMs - anchorMs) / 60_000;
+  if (staleMin < 1) return null;
+
+  // dropPp < 0 (descarga). capacityKwh = bessCapacityKwh * bessCount.
+  const dropPp = (currentBatteryKw * staleMin / 60) / capacityKwh * 100;
+  const projected = Math.max(0, Math.min(100, currentSoc + dropPp));
+  return { soc: projected, staleMin, ratePpPerMin: dropPp / staleMin };
+}
+
+/**
+ * Carrega capacidade + histórico do DB e aplica projectStaleSoc. Retorna
+ * null se o snapshot não está stale (caminho comum — telemetria viva).
+ */
+async function detectStaleProjection(
+  siteId: number,
+  state: { currentSoc: number; currentBatteryPower: number | null },
+  nowMs: number,
+): Promise<{ soc: number; ratePpPerMin: number; staleMin: number } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  if (state.currentBatteryPower === null || state.currentBatteryPower > -STALE_MIN_DISCHARGE_KW) {
+    return null;
+  }
+
+  const sites = await db.select().from(bessSites).where(eq(bessSites.id, siteId)).limit(1);
+  const site = sites[0];
+  if (!site) return null;
+  const capacityKwh = site.bessCapacityKwh * site.bessCount;
+
+  const rows = await db
+    .select()
+    .from(bessReadings)
+    .where(and(eq(bessReadings.siteId, siteId), eq(bessReadings.valid, true)))
+    .orderBy(desc(bessReadings.createdAt))
+    .limit(20);
+
+  const proj = projectStaleSoc({
+    currentSoc: state.currentSoc,
+    currentBatteryKw: state.currentBatteryPower,
+    readingsDesc: rows.map((r) => ({
+      soc: r.soc,
+      batteryPower: r.batteryPower,
+      createdAt: r.createdAt,
+    })),
+    capacityKwh,
+    nowMs,
+  });
+  return proj;
+}
+
 // Threshold pra considerar a leitura "fresca o bastante pra usar como REAL".
 // 30 min cobre intervaloPadrao=15min e zona crítica=1min com folga.
 const STALE_THRESHOLD_MS = 30 * 60_000;
@@ -149,8 +257,20 @@ export async function estimateCurrentSoc(siteId: number): Promise<SocEstimate | 
   // Leitura velha demais — não há SOC confiável.
   if (ageMs > ABANDON_THRESHOLD_MS) return null;
 
-  // Leitura recente — devolve o real direto.
+  // Leitura recente — MAS pode ser um snapshot STALE reentregue pela
+  // FusionSolar (mesmo retrato repetido enquanto a bateria drena). Antes de
+  // confiar, cross-check via Coulomb counting; se stale + descarregando,
+  // devolve o SOC projetado (menor) marcado ESTIMATED.
   if (ageMs < STALE_THRESHOLD_MS) {
+    const stale = await detectStaleProjection(siteId, state, now);
+    if (stale) {
+      return {
+        soc: stale.soc,
+        source: "ESTIMATED",
+        ageSeconds,
+        ratePpPerMin: stale.ratePpPerMin,
+      };
+    }
     return {
       soc: state.currentSoc,
       source: "REAL",
