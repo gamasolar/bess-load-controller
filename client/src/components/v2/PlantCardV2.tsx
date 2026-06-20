@@ -367,6 +367,7 @@ export function PlantCardV2({ slug, hideExpandButton = false }: { slug: string; 
             <PumpStatus
               pumpState={s.derived.pumpState as "ON" | "OFF" | "UNKNOWN"}
               noHardware={noHardware}
+              online={s.state.sonoffOnline !== false}
               readOnly={!isAdmin}
               cooldownActive={cooldownActive}
               cooldownRemainingMs={s.derived.cooldownRemainingMs}

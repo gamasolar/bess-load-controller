@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 export function PumpStatus({
   pumpState,
   noHardware,
+  online = true,
   readOnly = false,
   cooldownActive,
   cooldownRemainingMs,
@@ -12,26 +13,36 @@ export function PumpStatus({
 }: {
   pumpState: "ON" | "OFF" | "UNKNOWN";
   noHardware: boolean;
+  /** Sonoff alcançável agora (LWT). Quando false, o último estado reportado
+   *  (pumpState) não é confiável — mostramos "OFFLINE" em vez de LIGADA/DESLIGADA. */
+  online?: boolean;
   readOnly?: boolean;
   cooldownActive: boolean;
   cooldownRemainingMs: number;
   busy: boolean;
   onToggle: () => void;
 }) {
-  const isOn = pumpState === "ON";
-  const unknown = pumpState === "UNKNOWN";
+  // Sonoff inalcançável (mas configurado): o estado reportado está congelado
+  // no último valor — não dá pra saber se a bomba está ligada de fato.
+  const offline = !noHardware && !online;
+  const isOn = pumpState === "ON" && !offline;
+  const unknown = pumpState === "UNKNOWN" && !offline;
 
-  const ringClass = unknown
-    ? "border-zinc-600 bg-zinc-800/60"
-    : isOn
-      ? "border-emerald-400/70 bg-emerald-500/15 shadow-[0_0_30px_rgba(16,185,129,0.35)]"
-      : "border-zinc-600/70 bg-zinc-800/40";
+  const ringClass = offline
+    ? "border-amber-500/50 bg-zinc-800/40"
+    : unknown
+      ? "border-zinc-600 bg-zinc-800/60"
+      : isOn
+        ? "border-emerald-400/70 bg-emerald-500/15 shadow-[0_0_30px_rgba(16,185,129,0.35)]"
+        : "border-zinc-600/70 bg-zinc-800/40";
 
-  const iconColor = unknown
-    ? "text-zinc-500"
-    : isOn
-      ? "text-emerald-300"
-      : "text-zinc-500";
+  const iconColor = offline
+    ? "text-amber-400/70"
+    : unknown
+      ? "text-zinc-500"
+      : isOn
+        ? "text-emerald-300"
+        : "text-zinc-500";
 
   return (
     <div className="flex items-center gap-4">
@@ -57,12 +68,17 @@ export function PumpStatus({
         <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Comando da Bomba</p>
         <p
           className={`text-base font-bold leading-tight tracking-tight ${
-            unknown ? "text-zinc-500" : isOn ? "text-emerald-300" : "text-zinc-400"
+            offline ? "text-amber-400" : unknown ? "text-zinc-500" : isOn ? "text-emerald-300" : "text-zinc-400"
           }`}
         >
-          {noHardware ? "—" : unknown ? "DESCONHECIDO" : isOn ? "LIGADA" : "DESLIGADA"}
+          {noHardware ? "—" : offline ? "OFFLINE" : unknown ? "DESCONHECIDO" : isOn ? "LIGADA" : "DESLIGADA"}
         </p>
-        {cooldownActive && (
+        {offline && (
+          <p className="text-[10px] text-amber-400/80 mt-0.5 leading-tight">
+            Automação sem conexão — estado real desconhecido
+          </p>
+        )}
+        {!offline && cooldownActive && (
           <p className="text-[10px] text-amber-400 mt-0.5">
             ⏱ Cooldown {Math.ceil(cooldownRemainingMs / 1000)}s
           </p>
@@ -74,7 +90,8 @@ export function PumpStatus({
           variant={isOn ? "outline" : "default"}
           size="sm"
           className="min-h-[36px] min-w-[88px] text-xs font-semibold"
-          disabled={busy || cooldownActive}
+          disabled={busy || cooldownActive || offline}
+          title={offline ? "Automação offline — comando indisponível" : undefined}
           onClick={onToggle}
         >
           <Power className="w-3.5 h-3.5 mr-1.5" />
