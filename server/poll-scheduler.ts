@@ -27,6 +27,16 @@ const DELAY_BETWEEN_SITES_MS = 15_000; // respeitar rate limit Northbound (10s+)
 const _siteTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 let _started = false;
 
+/**
+ * Coage valores não-finitos (NaN, Infinity) e undefined/null para null.
+ * Sem isso, um NaN vindo da FusionSolar (ex.: battery_power parcial) chega
+ * cru no MySQL como literal "NaN" e derruba a gravação INTEIRA do bess_state
+ * (ER_BAD_FIELD_ERROR), congelando SOC/telemetria do site até o próximo poll bom.
+ */
+function fin(n: number | null | undefined): number | null {
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
 export function isInCriticalZone(
   soc: number,
   socMinDesliga: number,
@@ -165,12 +175,12 @@ async function pollSite(slug: string): Promise<void> {
     // load-monitor.
     if (battery && battery.battery_soc != null && db) {
       const soc = battery.battery_soc;
-      const battPower = battery.battery_power ?? null;
+      const battPower = fin(battery.battery_power);
       await db.update(bessState).set({
-        currentSoc: soc,
-        currentSoh: battery.battery_soh ?? null,
+        currentSoc: fin(soc),
+        currentSoh: fin(battery.battery_soh),
         currentBatteryPower: battPower,
-        currentTemperature: battery.battery_temperature ?? null,
+        currentTemperature: fin(battery.battery_temperature),
         lastTelemetryAt: new Date(),
         socSource: "fusionsolar",
       }).where(eq(bessState.siteId, site.id));
@@ -189,8 +199,8 @@ async function pollSite(slug: string): Promise<void> {
 
     if (battery && battery.battery_soc != null && db) {
       const soc = battery.battery_soc;
-      const battPower = battery.battery_power ?? null;
-      const pvPower = inverter?.active_power ?? null;
+      const battPower = fin(battery.battery_power);
+      const pvPower = fin(inverter?.active_power);
       const battDischarge = battPower != null && battPower < 0 ? Math.abs(battPower) : 0;
       const battCharge = battPower != null && battPower > 0 ? battPower : 0;
       const loadPower = pvPower != null
@@ -199,7 +209,7 @@ async function pollSite(slug: string): Promise<void> {
 
       await db.update(bessState).set({
         currentPvPower: pvPower,
-        currentLoadPower: loadPower,
+        currentLoadPower: fin(loadPower),
         lastTelemetryAt: new Date(),
       }).where(eq(bessState.siteId, site.id));
 
@@ -276,11 +286,11 @@ async function pollSite(slug: string): Promise<void> {
       // 3. INSERT da leitura JÁ com loadHealth (histórico unificado).
       await db.insert(bessReadings).values({
         siteId: site.id,
-        soc,
-        soh: battery.battery_soh ?? null,
+        soc: fin(soc),
+        soh: fin(battery.battery_soh),
         batteryPower: battPower,
-        batteryTemperature: battery.battery_temperature ?? null,
-        busVoltage: battery.bus_voltage ?? null,
+        batteryTemperature: fin(battery.battery_temperature),
+        busVoltage: fin(battery.bus_voltage),
         pvPower,
         loadPower,
         loadHealth: computedLoadHealth,
