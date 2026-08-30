@@ -47,6 +47,11 @@ import { generateSiteReport, generateAllReports, generateAndNotify, getScheduler
 // Re-exported for backwards compat (mqtt-dispatch.test.ts imports from "./routers")
 export { sendMqttCommand } from "./mqtt-dispatch";
 import { sendMqttCommand } from "./mqtt-dispatch";
+import {
+  decideSonoffAlarm, decideBrokerAlarm,
+  describeSonoffOffline, describeBrokerOffline,
+  ALARM_TYPE_SONOFF_OFFLINE, ALARM_TYPE_BROKER_OFFLINE,
+} from "./connectivity-alarm";
 
 // ── Notification helper for critical alarms ──
 async function notifyCriticalAlarm(siteName: string, message: string) {
@@ -494,6 +499,85 @@ async function sweepDivergenceAutoClose() {
   }
 }
 
+// ── Alarmes de conectividade da automação (broker + Sonoff) ──
+// Roda no mesmo ciclo do sweep de divergência: o callback onStateChange do
+// MqttClient só dispara em TRANSIÇÃO, então um dispositivo que caiu e ficou
+// caído nunca mais seria avaliado — foi exatamente o que deixou o Sonoff da
+// Barragem 16h fora sem alarme em 29-30/08/2026.
+let brokerDisconnectedSince: number | null = null;
+
+async function sweepConnectivityAlarms() {
+  try {
+    const mqtt = getMqttClient();
+    const brokerConnected = mqtt.isConnected;
+    const now = Date.now();
+    const sites = await getAllSites();
+    const mqttSites = sites.filter(s => s.mqttTopic);
+
+    // ── Broker ──
+    const brokerAction = decideBrokerAlarm({ brokerConnected, disconnectedSince: brokerDisconnectedSince, now });
+    switch (brokerAction.kind) {
+      case "MARK_DISCONNECTED":
+        brokerDisconnectedSince = brokerAction.since;
+        console.warn("[Connectivity] Broker MQTT inacessível — iniciando contagem.");
+        break;
+      case "OPEN_ALARM": {
+        const desc = describeBrokerOffline(brokerAction.offlineMinutes);
+        for (const site of mqttSites) {
+          await openAlarmIfMissing(site.id, "CRITICAL", ALARM_TYPE_BROKER_OFFLINE, desc);
+        }
+        break;
+      }
+      case "CLEAR":
+        brokerDisconnectedSince = null;
+        await closeAlarmsByType(ALARM_TYPE_BROKER_OFFLINE);
+        console.log("[Connectivity] Broker MQTT reconectado — alarme fechado.");
+        break;
+    }
+
+    // ── Dispositivos ──
+    for (const site of mqttSites) {
+      const state = await getBessState(site.id);
+      if (!state) continue;
+
+      const action = decideSonoffAlarm({
+        brokerConnected,
+        sonoffOnline: state.sonoffOnline,
+        offlineSince: state.sonoffOfflineSince ?? null,
+        now,
+      });
+
+      switch (action.kind) {
+        case "MARK_OFFLINE":
+          await upsertBessState(site.id, { sonoffOfflineSince: action.since });
+          console.warn(`[Connectivity] ${site.slug}: Sonoff offline — iniciando contagem para alarme.`);
+          break;
+
+        case "OPEN_ALARM": {
+          const existing = await getActiveAlarms(site.id);
+          const alreadyOpen = existing.some(a => a.type === ALARM_TYPE_SONOFF_OFFLINE);
+          if (alreadyOpen) break;
+          const desc = describeSonoffOffline(site.name, action.offlineMinutes);
+          await openAlarmIfMissing(site.id, "CRITICAL", ALARM_TYPE_SONOFF_OFFLINE, desc);
+          await addEvent(site.id, "SONOFF_OFFLINE", desc);
+          console.error(`[Connectivity] ALARME ${site.slug}: ${desc}`);
+          await notifyCriticalAlarm(site.name, desc);
+          break;
+        }
+
+        case "CLEAR":
+          await upsertBessState(site.id, { sonoffOfflineSince: null });
+          await closeAlarmsByType(ALARM_TYPE_SONOFF_OFFLINE, site.id);
+          await addEvent(site.id, "SONOFF_ONLINE", "Sonoff voltou a se comunicar com o broker.");
+          console.log(`[Connectivity] ${site.slug}: Sonoff voltou — alarme fechado.`);
+          break;
+      }
+    }
+  } catch (e) {
+    console.warn("[Connectivity] sweepConnectivityAlarms erro:", e);
+  }
+}
+
 export async function startMqttStateSync() {
   if (!isMqttConfigured()) {
     console.log("[MqttSync] MQTT não configurado — sync desativado.");
@@ -588,7 +672,10 @@ export async function startMqttStateSync() {
     if (connected) {
       mqtt.startPolling(30_000); // Poll every 30 seconds
       if (!divergenceAutoCloseInterval) {
-        divergenceAutoCloseInterval = setInterval(sweepDivergenceAutoClose, DIVERGENCE_AUTO_CLOSE_MS);
+        divergenceAutoCloseInterval = setInterval(() => {
+          void sweepDivergenceAutoClose();
+          void sweepConnectivityAlarms();
+        }, DIVERGENCE_AUTO_CLOSE_MS);
       }
       console.log(`[MqttSync] Ativo: ${trackedCount} dispositivo(s) rastreado(s), polling a cada 30s.`);
     } else {

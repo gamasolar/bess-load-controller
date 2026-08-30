@@ -1,7 +1,7 @@
 # CLAUDE.md — BESS Load Controller Dashboard
 
 > **Para outro Claude (ou humano técnico) que abre este projeto pela primeira vez.**
-> Última atualização: 2026-05-01 · Última sessão: refactor MVP v2 (Passos 2-3) — removido projeção SOC, ETA polling, watchdog antecipa-polls, skip de inverter; soc-estimator corrigido. Restaurada filosofia "respeitar faixa configurada".
+> Última atualização: 2026-08-30 · Última sessão: Sonoff da Barragem offline desde 29/08 23:54 (16h sem alarme). Barragem em `controlMode=MANUAL` até o dispositivo voltar — **reverter pra AUTO quando reconectar**. Adicionados alarmes `SONOFF_OFFLINE`/`MQTT_BROKER_OFFLINE`.
 
 ---
 
@@ -54,9 +54,10 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
   │          ▼ MQTT (mqtt://92.112.179.225:1883)
   │     ┌────────────────────────┐
   │     │ Mosquitto remoto       │
-  │     │ srv769185 (Easypanel)  │
+  │     │ srv769185 (systemd)    │
   │     │ ↕ Sonoff Barragem      │
   │     │   topic: bess_sonoff   │
+  │     │   client-id DVES_65A7F8│
   │     └────────────────────────┘
   │
   ▼ MySQL local (3306)
@@ -95,6 +96,8 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 | `/etc/cloudflared/config.yml.bak-2026-04-24-2329` | backup pré-mudança (não apagar até estabilizar) |
 | `/var/log/nginx/bess_access.log` `bess_error.log` | logs nginx do site |
 | `journalctl -u bess-dashboard` | logs do dashboard |
+| `srv769185:/var/log/mosquitto/mosquitto.log` | **log do broker MQTT** — quem conectou/caiu e por quê. Epoch UTC; `mosquitto.service` é nativo (não Docker) |
+| `srv769185:/etc/mosquitto/conf.d/bess.conf` | config do broker (listener 1883 + websockets 9001, `password_file`) |
 | MySQL `bess_dashboard` | banco principal |
 | MySQL user `bess_user@localhost` | acesso DB (senha no `.env`) |
 
@@ -120,6 +123,7 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 | 2026-04-30 | Incidente Barragem | Flapping da bomba (4 ciclos ON/OFF em 45min) + storm de 407 (308 em 24h) + 30min sem visibilidade de PV/load. Causas: histerese assimétrica entre TURN_OFF projetivo e TURN_ON literal; watchdog antecipava polls quebrando rate limit do Huawei. |
 | 2026-05-01 | Refactor de reversão | `DECISION-RESPECT-CONFIG.md` (Fernando) decidiu reverter ao MVP. Commits: `8c90eb7` (skip), `3c8611d` (projeção+margem), `55ab367` (ETA+watchdog), `72eb31a` (soc-estimator filtra por estado da bomba e retorna null sem histórico). 61 testes unitários verdes. |
 | 2026-05-07 | Sessão extensa (8h+) | (a) Diagnóstico do incidente 05/02 (Black Start manual presencial — Auto Black Start nunca funcionou desde commissioning); descoberta arquitetural: LUNA2000-215-2S10 + SmartLogger3000 sem STS/Backup Box é arquitetura on-grid Huawei sendo operada off-grid puro. (b) INV1 da Barragem trocado fisicamente (novo devId `1000000055696640`, ESN `6T2529034582`); DB atualizado com 2 inversores ativos. (c) Rate limit FusionSolar: `API_CALL_DELAY_MS` 10s→70s (separa janelas `getBatteryRealKpi` e `getInverterRealKpi`). (d) Stage 1/2 polling implementado e revertido conscientemente (latência 1min < ruído BMS de 4pp = 25× maior). (e) NOPASSWD sudoers configurado (`gama` → `systemctl restart bess-dashboard` sem senha). (f) Feature DECISION-OVERSHOOT-COMPENSATION implementada em 6 etapas atômicas (schema → decideAction → log → UI → testes → validação): coluna `overshootFactor` adicionada, lógica de compensação proporcional `socMinDesliga + |batteryPower|*factor` aplicada APENAS na regra TURN_OFF AUTO, log condicional `[ControlEngine]` em poll-scheduler, campo configurável em `ConfigModalV2`, 5 testes novos (34/34 passing em control-engine), CLAUDE.md atualizado. (g) Investigação retroativa do TURN_OFF de 05/07 07:55 (SOC=20 com smd=22) revelou padrão NÃO previsto: overshoot do BMS LFP ocorre DURANTE a operação (não só pós-OFF como hipótese original assumia), invalidando parcialmente a fórmula linear `|bat|*factor`. Decisão final: feature fica dormente (`factor=0` nas duas plantas), disponível pra ativar quando houver dados melhores. (h) Investigação de histerese matinal (30 dias): `socMinReliga=35` atinge em 93% dos dias mas atrasa religa pra >9h em 5/6 casos — viola restrição operacional do operador (bomba precisa ligar até 8-9h). Decisão: manter Barragem em 20/30 conforme configurado pelo operador. (i) Conta secundária `projetos@gamasolar.com.br` (`userId=13`) identificada como segunda conta admin do operador (legítima). |
+| 2026-08-30 | Incidente Sonoff offline + alarme de conectividade | (a) Sonoff da Barragem (`DVES_65A7F8`) fora do ar desde **29/08 23:54** — 16h sem alarme nenhum. (b) Diagnóstico pelo log do broker: `closed its connection` (FIN ordenado no TCP), **não** `exceeded timeout` — descarta queda de energia; e **zero tentativas de reconexão** desde então. Telemetria FusionSolar ininterrupta e carga residual (~90 W) inalterada antes/depois ⇒ planta com energia e internet OK. Causa isolada no dispositivo/Wi-Fi local. (c) Contraste com 26/08 02:30-04:21: 6× `exceeded timeout` reconectando de IPs diferentes (CGNAT Starlink) = instabilidade de link real; depois ficou **3 dias seguidos online**. (d) Bomba operada manualmente na planta (carga 47 kW a partir de 30/08 14:08 com Sonoff OFF). (e) Barragem → `controlMode=MANUAL` (parava ~120 tentativas falhas/dia); proteção BLACKOUT segue ativa por vir antes do guard MANUAL em `decideAction`. (f) Implementado `server/connectivity-alarm.ts` — alarmes `SONOFF_OFFLINE` (15min) e `MQTT_BROKER_OFFLINE` (5min), 18 testes. |
 | (futuro) | Caminho 2 | Modbus TCP direto no SmartLogger 3000 — depende de visita técnica. |
 
 ---
@@ -132,7 +136,7 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 
 **Primeiro user = admin.** Lógica em `server/auth.ts:registerAuthRoutes`. Se `count(users) == 0`, força `role=admin` no registro. Subsequentes ficam `role=user`. Após bootstrap, `ALLOW_SIGNUP=false` no `.env` desabilita signup público.
 
-**Por que MQTT broker remoto (`92.112.179.225:1883`) em vez de local.** O Sonoff físico na Barragem está configurado pra falar com aquele broker (no servidor `srv769185` Easypanel). Mover o broker pro `gamaserver` exigiria reconfigurar Sonoff fisicamente, e ele tá em planta remota sem acesso fácil. **Trade-off aceito:** credenciais MQTT trafegam em texto puro pela internet pública (1883 sem TLS). Tratar quando virar prioridade — opções: TLS na 8883, mover broker via Cloudflare Tunnel TCP, VPN/Tailscale.
+**Por que MQTT broker remoto (`92.112.179.225:1883`) em vez de local.** O Sonoff físico na Barragem está configurado pra falar com aquele broker (no servidor `srv769185`; **processo nativo via systemd, NÃO Docker/Easypanel** — verificado 2026-08-30, `mosquitto.service` + `/etc/mosquitto/conf.d/bess.conf`). Mover o broker pro `gamaserver` exigiria reconfigurar Sonoff fisicamente, e ele tá em planta remota sem acesso fácil. **Trade-off aceito:** credenciais MQTT trafegam em texto puro pela internet pública (1883 sem TLS). Tratar quando virar prioridade — opções: TLS na 8883, mover broker via Cloudflare Tunnel TCP, VPN/Tailscale.
 
 **Por que porta 3010 no Node.** A 3000 estava ocupada por outro projeto (Easypanel proxy / nexus PM2). 3010 é livre.
 
@@ -169,6 +173,7 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 - **`triggerSitePoll`** força reagendamento imediato após mudança de modo/config/comando manual
 - **INV1 da Barragem corrigido no DB** (2026-05-07): trocado fisicamente, `fusionsolarInverterIds` atualizado pra `["1000000055696640","1000000054174515"]` — 2 inversores ativos somando PV correto.
 - **`API_CALL_DELAY_MS=70s`** (2026-05-07) mitiga rate limit Huawei: `getDevRealKpi` é 1 call/janela rolante 60s POR ENDPOINT, e battery+inverter usam o mesmo endpoint. 70s = 60s da janela + 10s de margem clock-skew.
+- **Alarmes de conectividade da automação** (2026-08-30): `server/connectivity-alarm.ts` + sweep em `routers.ts` (mesmo ciclo de 30s do sweep de divergência). Abre `SONOFF_OFFLINE` (CRITICAL) após 15min de dispositivo mudo e `MQTT_BROKER_OFFLINE` (CRITICAL) após 5min sem broker; fecha sozinho na volta. Marcador persistido em `bess_state.sonoffOfflineSince` (sobrevive a restart). Chama `notifyCriticalAlarm` → no-op enquanto Telegram não estiver configurado.
 - **Feature de compensação de overshoot BMS** (2026-05-07) implementada e dormente: campo `bess_config.overshootFactor` com default 0; ativo só com factor>0 via UI. Ver §14.
 
 ❌ **Não funciona ainda (pendente):**
@@ -178,6 +183,8 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 - **Auto Black Start nunca funcionou desde commissioning.** Arquitetura LUNA2000-215-2S10 + SmartLogger3000 sem STS/Backup Box é on-grid pela Huawei, sendo operada off-grid pura. Hipótese: cabeamento Enable+/Enable- ausente OU hardware incompleto pra essa modalidade. Black Start precisou ser feito manualmente presencial em 2026-05-02.
 
 ⚠️ **Conhecidos & não-resolvidos:**
+- **Como ler a queda do Sonoff no log do broker** (`/var/log/mosquitto/mosquitto.log` em `srv769185`, timestamps em **epoch UTC**): `closed its connection` = FIN ordenado (dispositivo fechou — Wi-Fi perdido de forma detectada, reboot ou reconfiguração); `has exceeded timeout` = sumiu sem avisar (**queda de energia**, keepalive `k30`); `New connection ... as DVES_65A7F8` repetido de IPs diferentes = CGNAT do Starlink, link instável mas dispositivo vivo. A ausência de qualquer `New connection` significa que ele **nem tenta** — sem energia, sem Wi-Fi ou travado.
+- **Broker MQTT exposto e sendo varrido.** Log de `srv769185` registra scanners recorrentes na 1883 (`ONYPHE` de 195.184.76.x, além de 165.232.131.160 e 137.184.191.212). A autenticação segura, mas a senha trafega em texto puro. Reforça a pendência de TLS/tunnel do §5.
 - Mosquitto config duplicada em `srv769185` (`/etc/mosquitto/conf.d/bess.conf` duplica `password_file` e `persistence_location`). Broker subiu na raspa; pode não voltar em próximo reboot daquele servidor.
 - Senha MySQL `bess_user` apareceu em chat (`<redacted — ver .env>`). Decisão Fernando 2026-04-25: NÃO rotacionar (fica no histórico mas a string não vai pro git). Rotacionar antes de produção crítica/se houver indício de uso indevido.
 - Sonoff atual é **Sonoff Basic**, sem medição de energia (esperado-se POWR316D pelo código). Ligar/desligar funciona; telemetria de potência não vem.
@@ -207,13 +214,13 @@ Quem usa hoje: 1 usuário admin (`fernando@gamasolar.com.br`). `ALLOW_SIGNUP=fal
 
 4. **Implementar `getAlarmList` polling periódico Huawei (5-10min) → `bess_alarms` com prefixo `HUAWEI_`.** Hoje só capturamos rate-limit; alarmes operacionais da Huawei (sobretemperatura, falha de inversor, BMS warning) não chegam. Endpoint já existe em `server/fusionsolar.ts:538`, falta integrar no scheduler.
 
-5. **Implementar alertas Telegram/WhatsApp via Evolution API:** telemetria parada >30min, Sonoff offline >15min, SOC < threshold. Hoje sintoma de proteção BMS só descoberto a posteriori via log inspection.
+5. **Implementar alertas Telegram/WhatsApp via Evolution API.** ✅ **Parcial (2026-08-30):** a detecção de `Sonoff offline >15min` e `broker offline >5min` já existe e abre alarme em `bess_alarms` (visível na UI), chamando `notifyCriticalAlarm`. **Falta o canal de saída** — sem `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` o `notifyOwner` é no-op, então o alarme só aparece pra quem abrir o dashboard. Ainda pendentes como detecção: telemetria parada >30min e SOC < threshold.
 
 6. **Abrir chamado Huawei Partners sobre Auto Black Start** em LUNA2000-215-2S10 + SmartLogger3000 sem STS/Backup Box. SN `BT25A1551919`, FW `V200R024C00SPC410`. Modalidade off-grid pura nunca operou Auto Black Start desde commissioning — confirmar se faltou cabeamento Enable+/Enable- ou se hardware é insuficiente.
 
 ### 🟡 Importantes (não bloqueiam mas são qualidade)
 
-7. **Mosquitto config duplicada em `srv769185`.** Cuidar antes de qualquer reboot daquela máquina.
+7. **Mosquitto config duplicada em `srv769185`.** Cuidar antes de qualquer reboot daquela máquina. **Risco parcialmente refutado (2026-08-30):** o serviço reiniciou sozinho em **26/08 06:47** e subiu limpo (`Started mosquitto.service`, 4 dias de uptime desde então), então o medo de "não voltar no próximo reboot" não se confirmou. Conferido: `bess.conf` declara `listener`/`allow_anonymous`/`password_file`/`connection_messages` e o `mosquitto.conf` principal traz `log_dest` — não reconferi duplicação de `persistence_location`.
 
 8. **Subir `intervaloCritico` na UI de 1min pra 2min (Barragem).** Em zona crítica com 1min × 2 calls/poll, estoura rate limit do Huawei (1 call por janela rolante de 60s, por endpoint, e `getBattery` + `getInverter` usam o MESMO endpoint `/getDevRealKpi`). Resultado: pv/load=NULL durante zona crítica + 407 nos logs. Fix da UI: subir `intervaloCritico` pra 2min. Custo: latência detecção sobe de 30s pra 60s mediano (~0.2pp em SOC ≈ irrelevante). **Não readicionar skip de inverter no código.**
 
@@ -317,6 +324,13 @@ history -c
 **Sonoff offline (`tele/bess_sonoff/LWT` retorna `Offline`)**
 - Causa em ~99% dos casos: Starlink da planta intermitente, ou Sonoff caiu de Wi-Fi e precisa reboot físico. Não tem fix remoto — depende de alguém na planta.
 - Verificar broker está ativo: `mosquitto_sub -h 92.112.179.225 ... '$SYS/broker/uptime' -C 1 -W 3`.
+- **Roteiro de diagnóstico (validado em 2026-08-30):**
+  1. `ss -tnp | grep 1883` no gamaserver — 1 linha ESTAB = dashboard conectado ao broker, problema não é nosso.
+  2. No `srv769185`: `grep -iE "new client|disconn|timeout|DVES" /var/log/mosquitto/mosquitto.log | tail -50`. **Uma linha por vez** — o terminal do console serial quebra colagem multi-linha com `\`.
+  3. Ler o padrão pela tabela do §6 (`closed its connection` vs `exceeded timeout` vs silêncio).
+  4. **Cruzar com a telemetria FusionSolar no mesmo horário.** Se SOC/carga residual seguiram normais durante a queda, a planta tem energia e internet — a falha é do dispositivo, não do link. Foi isso que descartou "faltou luz" em 29/08.
+  5. Se o dispositivo caiu mas a bomba aparece com carga alta (~47 kW na Barragem), alguém está operando **manualmente** na planta — confirmar antes de concluir que o relé travou.
+- **Enquanto estiver offline:** considerar `controlMode=MANUAL` no site (para as tentativas a cada ~4min que nunca confirmam). A proteção de **BLACKOUT continua ativa** — `decideAction` avalia `socBlackout` **antes** do guard MANUAL. Lembrar de voltar pra AUTO quando reconectar.
 
 **`pnpm install` falha com lockfile error**
 - Sempre usar `--no-frozen-lockfile`. Lockfile original é da versão Manus, foi regenerado na migração mas pode divergir de novo se mudar deps.
@@ -504,4 +518,4 @@ sudo systemctl restart cloudflared
 
 ---
 
-*Este arquivo é a fonte de verdade pra contexto operacional do projeto. Atualizar a cada sessão significativa. Última atualização: 2026-05-01.*
+*Este arquivo é a fonte de verdade pra contexto operacional do projeto. Atualizar a cada sessão significativa. Última atualização: 2026-08-30.*

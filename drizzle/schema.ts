@@ -146,6 +146,7 @@ export const bessState = mysqlTable("bess_state", {
   mqttConnected: boolean("mqttConnected").default(false).notNull(),
   sonoffOnline: boolean("sonoffOnline").default(false).notNull(),
   sonoffPower: mysqlEnum("sonoffPower", ["ON", "OFF", "UNKNOWN"]).default("UNKNOWN").notNull(),
+  sonoffOfflineSince: timestamp("sonoffOfflineSince"),  // Quando o Sonoff foi visto offline pela 1a vez (null = online)
   lastTelemetryAt: timestamp("lastTelemetryAt"),  // Last time SOC was updated from real FusionSolar data
   socSource: mysqlEnum("socSource", ["fusionsolar", "manual", "simulation", "unknown"]).default("unknown").notNull(),
   // ─── Load monitor (saúde da bomba) ───
