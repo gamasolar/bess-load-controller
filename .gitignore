@@ -115,3 +115,7 @@ storage-data/
 
 # Manus logs
 .manus-logs/
+
+# Dumps de banco (backups pré-migração/rename) — nunca versionar
+*.sql.gz
+backup-*.sql
