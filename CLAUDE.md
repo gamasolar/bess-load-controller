@@ -450,6 +450,8 @@ sudo systemctl restart cloudflared
 
 **Convenções do projeto:**
 
+- **Nunca cite a marca do equipamento de automação em texto visível ao operador.** Use "automação", "controlador da bomba" ou equivalente genérico. Vale para labels, toasts, `bess_events.description`, `bess_alarms.description`, `bess_actions.reason`, `bess_state.lastDecision` e **`bess_alarms.type`** — o `AlertBanner` renderiza o `type` cru na tela, então tipos de alarme também são texto visível (`AUTOMACAO_OFFLINE`, não `SONOFF_OFFLINE`). Mensagens tampouco devem expor o tópico MQTT: o operador não precisa dele, e ele muda quando o hardware troca. Motivo: o hardware é trocável (Sonoff Basic → POWR316D → outra marca) e o cliente não precisa saber qual é. Nomes de coluna do banco (`sonoffOnline`, `sonoffPower`, `sonoffOfflineSince`) **ficam como estão** — ninguém os vê e renomeá-los tocaria `control-engine.ts`, caminho crítico protegido pelo §14.
+
 - Frontend usa wouter, não react-router. Routes em `client/src/App.tsx`.
 - Tipo `User` em `drizzle/schema.ts`. Inclui `passwordHash` opcional.
 - Auth client: `useAuth` hook em `client/src/_core/hooks/useAuth.ts`.

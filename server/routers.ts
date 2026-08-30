@@ -48,9 +48,9 @@ import { generateSiteReport, generateAllReports, generateAndNotify, getScheduler
 export { sendMqttCommand } from "./mqtt-dispatch";
 import { sendMqttCommand } from "./mqtt-dispatch";
 import {
-  decideSonoffAlarm, decideBrokerAlarm,
-  describeSonoffOffline, describeBrokerOffline,
-  ALARM_TYPE_SONOFF_OFFLINE, ALARM_TYPE_BROKER_OFFLINE,
+  decideAutomacaoAlarm, decideBrokerAlarm,
+  describeAutomacaoOffline, describeBrokerOffline,
+  ALARM_TYPE_AUTOMACAO_OFFLINE, ALARM_TYPE_BROKER_OFFLINE,
 } from "./connectivity-alarm";
 
 // ── Notification helper for critical alarms ──
@@ -323,7 +323,7 @@ export async function evaluateLoadControl(siteId: number): Promise<{ action: str
       actionTaken = "LOAD_OFF";
       await addEvent(siteId, "LOAD_OFF", lastDecision);
       const pumpBefore = (state?.sonoffPower ?? "ON") as "ON" | "OFF" | "UNKNOWN";
-      // Send MQTT command to Sonoff
+      // Send MQTT command to automation device
       let mqttOk = true;
       if (site.mqttTopic) {
         const mqttResult = await sendMqttCommand(siteId, site.mqttTopic, "OFF", `autoEval:${site.slug}`);
@@ -355,7 +355,7 @@ export async function evaluateLoadControl(siteId: number): Promise<{ action: str
       actionTaken = "LOAD_ON";
       await addEvent(siteId, "LOAD_ON", lastDecision);
       const pumpBefore = (state?.sonoffPower ?? "OFF") as "ON" | "OFF" | "UNKNOWN";
-      // Send MQTT command to Sonoff
+      // Send MQTT command to automation device
       let mqttOk = true;
       if (site.mqttTopic) {
         const mqttResult = await sendMqttCommand(siteId, site.mqttTopic, "ON", `autoEval:${site.slug}`);
@@ -448,7 +448,7 @@ export function startAutoFetch() {
 
 /**
  * Start MQTT state sync: connects to broker, registers tracked devices,
- * sets up a callback to sync real Sonoff state to the database,
+ * sets up a callback to sync real device state to the database,
  * and starts polling every 30 seconds.
  */
 // Sweep periódico que fecha alarmes DIVERGENCE quando estado já convergiu.
@@ -473,7 +473,7 @@ async function sweepDivergenceAutoClose() {
         await closeAlarmsByType("DIVERGENCE", site.id);
         continue;
       }
-      // Divergente estável: reconcilia loadStatus ← sonoffPower (Sonoff é a verdade física).
+      // Divergente estável: reconcilia loadStatus ← sonoffPower (o dispositivo é a verdade física).
       // Só toca se não há cooldown ativo e a última manobra foi há >60s — evita race
       // com applyDecision recém-escrito ou com a janela de propagação do MQTT.
       const now = Date.now();
@@ -485,13 +485,13 @@ async function sweepDivergenceAutoClose() {
         : false;
       if (inCooldown || recentManeuver) continue;
       const reconciled = realPower === "ON" ? "on" : "off";
-      console.warn(`[MqttSync] RECONCILIANDO ${site.slug}: loadStatus ${expectedLoad}→${reconciled} (Sonoff=${realPower} estável)`);
+      console.warn(`[MqttSync] RECONCILIANDO ${site.slug}: loadStatus ${expectedLoad}→${reconciled} (automação=${realPower} estável)`);
       await upsertBessState(site.id, {
         loadStatus: reconciled,
-        lastDecision: `Reconciliado: loadStatus ${expectedLoad}→${reconciled} (Sonoff=${realPower} estável)`,
+        lastDecision: `Reconciliado: loadStatus ${expectedLoad}→${reconciled} (automação=${realPower} estável)`,
       });
       await addEvent(site.id, "RECONCILE",
-        `loadStatus ${expectedLoad}→${reconciled} (Sonoff reportava ${realPower} de forma estável).`);
+        `loadStatus ${expectedLoad}→${reconciled} (automação reportava ${realPower} de forma estável).`);
       // Não fecha o alarme aqui — próximo sweep verá converged e fechará.
     }
   } catch (e) {
@@ -499,10 +499,10 @@ async function sweepDivergenceAutoClose() {
   }
 }
 
-// ── Alarmes de conectividade da automação (broker + Sonoff) ──
+// ── Alarmes de conectividade da automação (broker + controlador) ──
 // Roda no mesmo ciclo do sweep de divergência: o callback onStateChange do
 // MqttClient só dispara em TRANSIÇÃO, então um dispositivo que caiu e ficou
-// caído nunca mais seria avaliado — foi exatamente o que deixou o Sonoff da
+// caído nunca mais seria avaliado — foi exatamente o que deixou a automação da
 // Barragem 16h fora sem alarme em 29-30/08/2026.
 let brokerDisconnectedSince: number | null = null;
 
@@ -540,9 +540,9 @@ async function sweepConnectivityAlarms() {
       const state = await getBessState(site.id);
       if (!state) continue;
 
-      const action = decideSonoffAlarm({
+      const action = decideAutomacaoAlarm({
         brokerConnected,
-        sonoffOnline: state.sonoffOnline,
+        automacaoOnline: state.sonoffOnline,
         offlineSince: state.sonoffOfflineSince ?? null,
         now,
       });
@@ -550,16 +550,16 @@ async function sweepConnectivityAlarms() {
       switch (action.kind) {
         case "MARK_OFFLINE":
           await upsertBessState(site.id, { sonoffOfflineSince: action.since });
-          console.warn(`[Connectivity] ${site.slug}: Sonoff offline — iniciando contagem para alarme.`);
+          console.warn(`[Connectivity] ${site.slug}: automação offline — iniciando contagem para alarme.`);
           break;
 
         case "OPEN_ALARM": {
           const existing = await getActiveAlarms(site.id);
-          const alreadyOpen = existing.some(a => a.type === ALARM_TYPE_SONOFF_OFFLINE);
+          const alreadyOpen = existing.some(a => a.type === ALARM_TYPE_AUTOMACAO_OFFLINE);
           if (alreadyOpen) break;
-          const desc = describeSonoffOffline(site.name, action.offlineMinutes);
-          await openAlarmIfMissing(site.id, "CRITICAL", ALARM_TYPE_SONOFF_OFFLINE, desc);
-          await addEvent(site.id, "SONOFF_OFFLINE", desc);
+          const desc = describeAutomacaoOffline(site.name, action.offlineMinutes);
+          await openAlarmIfMissing(site.id, "CRITICAL", ALARM_TYPE_AUTOMACAO_OFFLINE, desc);
+          await addEvent(site.id, "AUTOMACAO_OFFLINE", desc);
           console.error(`[Connectivity] ALARME ${site.slug}: ${desc}`);
           await notifyCriticalAlarm(site.name, desc);
           break;
@@ -567,9 +567,9 @@ async function sweepConnectivityAlarms() {
 
         case "CLEAR":
           await upsertBessState(site.id, { sonoffOfflineSince: null });
-          await closeAlarmsByType(ALARM_TYPE_SONOFF_OFFLINE, site.id);
-          await addEvent(site.id, "SONOFF_ONLINE", "Sonoff voltou a se comunicar com o broker.");
-          console.log(`[Connectivity] ${site.slug}: Sonoff voltou — alarme fechado.`);
+          await closeAlarmsByType(ALARM_TYPE_AUTOMACAO_OFFLINE, site.id);
+          await addEvent(site.id, "AUTOMACAO_ONLINE", "Automação voltou a se comunicar com o broker.");
+          console.log(`[Connectivity] ${site.slug}: automação voltou — alarme fechado.`);
           break;
       }
     }
@@ -603,7 +603,7 @@ export async function startMqttStateSync() {
       return;
     }
 
-    // Set callback: when real Sonoff state changes, update DB
+    // Set callback: when real device state changes, update DB
     mqtt.setOnStateChange(async (deviceTopic, realState) => {
       try {
         // Find which site uses this mqttTopic
@@ -615,7 +615,7 @@ export async function startMqttStateSync() {
         const prevPower = state?.sonoffPower ?? "UNKNOWN";
         const prevOnline = state?.sonoffOnline ?? false;
 
-        // Update DB with real Sonoff state
+        // Update DB with real device state
         await upsertBessState(site.id, {
           sonoffOnline: realState.online,
           sonoffPower: realState.power,
@@ -624,18 +624,18 @@ export async function startMqttStateSync() {
 
         // Log state changes
         if (realState.power !== prevPower && realState.power !== "UNKNOWN") {
-          console.log(`[MqttSync] ${site.slug}: Sonoff real state = ${realState.power} (was ${prevPower})`);
+          console.log(`[MqttSync] ${site.slug}: estado real da automação = ${realState.power} (was ${prevPower})`);
         }
         if (realState.online !== prevOnline) {
-          console.log(`[MqttSync] ${site.slug}: Sonoff online = ${realState.online}`);
+          console.log(`[MqttSync] ${site.slug}: automação online = ${realState.online}`);
         }
 
-        // Detect divergence: system says ON but Sonoff is OFF (or vice versa).
+        // Detect divergence: system says ON but device is OFF (or vice versa).
         // Estratégias pra evitar flutter:
         //   1. Re-leitura FRESCA (cache stale do bess_state vence em microssegundos).
         //   2. Suprime detecção durante cooldown (janela natural de dessincronia).
         //   3. Suprime se manobra acabou de acontecer (< 30s): applyDecision envia
-        //      MQTT antes de gravar loadStatus/cooldownUntil; o broadcast do Sonoff
+        //      MQTT antes de gravar loadStatus/cooldownUntil; o broadcast do dispositivo
         //      pode chegar aqui antes do UPDATE, gerando falso positivo.
         //   4. Auto-close vive no sweep periódico (DIVERGENCE_AUTO_CLOSE_MS), porque
         //      o callback só dispara em transição de estado e em estado estável
@@ -657,9 +657,9 @@ export async function startMqttStateSync() {
           if (isDivergent && !inCooldown && !recentManeuver) {
             console.warn(`[MqttSync] DIVERGÊNCIA ${site.slug}: sistema=${expectedLoad} sonoff=${realPower}`);
             await addEvent(site.id, "DIVERGENCE",
-              `Estado divergente: sistema diz carga ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
+              `Estado divergente: sistema diz carga ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas a automação reporta ${realPower}.`);
             await openAlarmIfMissing(site.id, "WARNING", "DIVERGENCE",
-              `Divergência: carga deveria estar ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas Sonoff reporta ${realPower}.`);
+              `Divergência: carga deveria estar ${expectedLoad === "on" ? "LIGADA" : "DESLIGADA"} mas a automação reporta ${realPower}.`);
           }
         }
       } catch (e) {
@@ -904,7 +904,7 @@ export const appRouter = router({
             cooldownRemainingMs,
             loadHealth: runtime.site.mqttTopic
               ? (runtime.state.loadHealth ?? "UNKNOWN")
-              // Read-only: sem Sonoff pra cross-check, mas se há consumo real (load>0)
+              // Read-only: sem automação pra cross-check, mas se há consumo real (load>0)
               // mostramos verde — igual Barragem em RUNNING_OK. Se zero, fica neutro.
               : ((runtime.state.currentLoadPower ?? 0) > 0.1 ? "RUNNING_OK" : "OFF_OK"),
             recentLoadPower,
@@ -1562,7 +1562,7 @@ export const appRouter = router({
             loadStatus = "off"; lowCounter = 0; healthStatus = "critical";
             lastDecision = `SOC em ${newSoc}% — CARGA DESLIGADA automaticamente (${lowRequired} leituras <= ${socLow}%).`;
             await addEvent(site.id, "LOAD_OFF", lastDecision);
-            // ── Send MQTT command to Sonoff (auto OFF) ──
+            // ── Send MQTT command to automation device (auto OFF) ──
             if (site.controlMode === "auto_mqtt" && site.mqttTopic) {
               await sendMqttCommand(site.id, site.mqttTopic, "OFF", `autoTick:${site.slug}`);
             }
@@ -1579,7 +1579,7 @@ export const appRouter = router({
             loadStatus = "on"; highCounter = 0; healthStatus = "healthy";
             lastDecision = `SOC em ${newSoc}% — CARGA RELIGADA automaticamente (${highRequired} leituras >= ${socHigh}%).`;
             await addEvent(site.id, "LOAD_ON", lastDecision);
-            // ── Send MQTT command to Sonoff (auto ON) ──
+            // ── Send MQTT command to automation device (auto ON) ──
             if (site.controlMode === "auto_mqtt" && site.mqttTopic) {
               await sendMqttCommand(site.id, site.mqttTopic, "ON", `autoTick:${site.slug}`);
             }

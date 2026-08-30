@@ -2,7 +2,7 @@
  * MQTT Tasmota Integration
  * 
  * Connects to the Mosquitto broker on the VPS (92.112.179.225:1883)
- * to send commands and receive status from Sonoff devices with Tasmota firmware.
+ * to send commands and receive status from devices running Tasmota firmware.
  * 
  * Tasmota MQTT topic structure:
  *   cmnd/<topic>/POWER  → send ON/OFF commands
@@ -37,7 +37,7 @@ interface PendingCommand {
 }
 
 /**
- * Callback invoked whenever the real Sonoff state changes (power ON/OFF, online/offline).
+ * Callback invoked whenever the real device state changes (power ON/OFF, online/offline).
  * Used to sync the real device state to the database.
  */
 export type OnDeviceStateChangeCallback = (
@@ -280,7 +280,7 @@ class MqttTasmotaClient {
           if (pending && state === pending.action) {
             clearTimeout(pending.timeout);
             this.pendingCommands.delete(deviceTopic);
-            pending.resolve({ success: true, message: `Sonoff ${deviceTopic}: ${state === "ON" ? "LIGADO" : "DESLIGADO"} com sucesso.` });
+            pending.resolve({ success: true, message: `Automação: ${state === "ON" ? "LIGADO" : "DESLIGADO"} com sucesso.` });
           }
         }
       } else if (suffix === "RESULT") {
@@ -360,7 +360,7 @@ class MqttTasmotaClient {
         // Even without confirmation, the command may have been sent
         resolve({
           success: false,
-          message: `Timeout: Sonoff ${deviceTopic} não confirmou o comando ${action} em 10s. O dispositivo pode estar offline.`,
+          message: `Timeout: a automação não confirmou o comando ${action} em 10s. O dispositivo pode estar offline.`,
         });
       }, 10000);
 

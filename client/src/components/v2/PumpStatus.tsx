@@ -13,7 +13,7 @@ export function PumpStatus({
 }: {
   pumpState: "ON" | "OFF" | "UNKNOWN";
   noHardware: boolean;
-  /** Sonoff alcançável agora (LWT). Quando false, o último estado reportado
+  /** Automação alcançável agora (LWT). Quando false, o último estado reportado
    *  (pumpState) não é confiável — mostramos "OFFLINE" em vez de LIGADA/DESLIGADA. */
   online?: boolean;
   readOnly?: boolean;
@@ -22,7 +22,7 @@ export function PumpStatus({
   busy: boolean;
   onToggle: () => void;
 }) {
-  // Sonoff inalcançável (mas configurado): o estado reportado está congelado
+  // Automação inalcançável (mas configurada): o estado reportado está congelado
   // no último valor — não dá pra saber se a bomba está ligada de fato.
   const offline = !noHardware && !online;
   const isOn = pumpState === "ON" && !offline;

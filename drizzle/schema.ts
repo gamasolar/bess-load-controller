@@ -55,7 +55,7 @@ export const bessSites = mysqlTable("bess_sites", {
   pumpDescription: text("pumpDescription"),
   // Control mode
   controlMode: mysqlEnum("controlMode", ["manual", "auto_mqtt", "auto_future"]).default("manual").notNull(),
-  // MQTT config for Sonoff/Tasmota
+  // MQTT config da automação (dispositivo Tasmota)
   mqttTopic: varchar("mqttTopic", { length: 128 }),
   // FusionSolar device IDs (JSON array of device IDs for this site)
   fusionsolarDeviceIds: text("fusionsolarDeviceIds"), // JSON string: battery device IDs ["id1","id2"]
@@ -146,7 +146,8 @@ export const bessState = mysqlTable("bess_state", {
   mqttConnected: boolean("mqttConnected").default(false).notNull(),
   sonoffOnline: boolean("sonoffOnline").default(false).notNull(),
   sonoffPower: mysqlEnum("sonoffPower", ["ON", "OFF", "UNKNOWN"]).default("UNKNOWN").notNull(),
-  sonoffOfflineSince: timestamp("sonoffOfflineSince"),  // Quando o Sonoff foi visto offline pela 1a vez (null = online)
+  sonoffOfflineSince: timestamp("sonoffOfflineSince"),  // Quando a automação foi vista offline pela 1a vez (null = online).
+  // Nome do campo mantido por consistência com sonoffOnline/sonoffPower — ver §14 do CLAUDE.md.
   lastTelemetryAt: timestamp("lastTelemetryAt"),  // Last time SOC was updated from real FusionSolar data
   socSource: mysqlEnum("socSource", ["fusionsolar", "manual", "simulation", "unknown"]).default("unknown").notNull(),
   // ─── Load monitor (saúde da bomba) ───

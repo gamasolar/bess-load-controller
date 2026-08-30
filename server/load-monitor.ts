@@ -5,7 +5,7 @@
  * comandou (loadStatus) com o consumo real (currentLoadPower derivado do
  * balanço de energia PV + bateria).
  *
- * Detecta o cenário smoking-gun de 27/04: comando ON, Sonoff ON, mas
+ * Detecta o cenário smoking-gun de 27/04: comando ON, automação ON, mas
  * softstarter em erro/motor parado → carga real próxima de zero por ≥10min.
  *
  * Observação passiva. Nunca muda estado de bomba. Em modo shadow só registra
@@ -62,7 +62,7 @@ export function evaluateLoadHealth(input: LoadMonitorInput): LoadHealthDecision 
   const expectedPumpKw = input.pumpPowerCv * input.pumpCount * KW_PER_CV;
   const threshold = input.thresholdOverrideKw ?? expectedPumpKw * PUMP_FRACTION_OK;
 
-  // ── Pre-conditions: dado fresh, Sonoff convergente, fora de transição ──
+  // ── Pre-conditions: dado fresh, automação convergente, fora de transição ──
   if (!state.lastTelemetryAt || now - state.lastTelemetryAt.getTime() > STALE_TELEMETRY_MS) {
     return { health: "UNKNOWN", nextFailureSince: failureSince };
   }
