@@ -119,7 +119,7 @@ Se o Piscinão virar crítico, migra para LOGO! e o A8v3 vira reserva.
 | | Motivo |
 |---|---|
 | Qualquer coisa **Wi-Fi** na cadeia de comando (Sonoff, POWR316D, Waveshare ESP32-S3, KC868-A6) | causa raiz dos dois incidentes |
-| Waveshare Modbus POE ETH Relay (B) | bom e barato, mas sem lógica/estado seguro — tudo cai no Pi |
+| ~~Waveshare Modbus POE ETH Relay (B)~~ **reabilitado 01/10** | Eu tinha descartado por "sem estado seguro". **Errado:** o comando *Flash ON* (coil `0x0200+ch`, duração `N × 100 ms`, máx. `0x7FFF` ≈ 54 min — verificado na wiki Waveshare) é um **dead-man switch**: o Pi manda "ligado por 5 min" a cada 60 s; se Pi e VPS sumirem, o relé abre sozinho em ≤ 5 min. Terceira camada **sem firmware**. Vira a opção mais barata viável (~R$ 250–300). Exigir a versão **(B)** (8 DI para o retorno do contator). Alimentar por 7–36 V do nobreak — o hAP ax lite não tem PoE-out. Sem RS485/AI: estação via USB-RS485 no Pi. Pendente: confirmar corrente dos contatos (tipicamente 10 A/250 V AC, folga para bobina de contator) e se o relé aceita 2 clientes TCP simultâneos (Pi + VPS). |
 | KC868-A16v3 | saída MOSFET (DC), não relé — não aciona bobina 220 V direto |
 | Relé no GPIO do Pi | sem isolamento; Pi vira ponto único de falha da bomba |
 | ADAM-6266 / Moxa / PiXtend / Revolution Pi | mais robustos, mais caros; voltam se o LOGO!/A8v3 falhar em campo |
