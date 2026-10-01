@@ -1,4 +1,4 @@
-# DECISION-2026-10-01 — Caminho 2: controle local por cabo (MikroTik + PLC + Pi/N100)
+# DECISION-2026-10-01 — Caminho 2: controle local por cabo (MikroTik + Pi + relé Modbus)
 
 > **Proposto por:** Claude, a partir das conversas de 17/09 a 01/10 com Fernando
 > **Data:** 2026-10-01
@@ -188,7 +188,7 @@ Serviço Node (mesmo repo, `USE_LOCAL_CONTROL=true`): lê SmartLogger (Modbus TC
 | Fase | O que entra | Sai quando |
 |---|---|---|
 | **0 — Pré-requisitos** | Telegram configurado; curativo Tasmota instalado | alarme chega no celular; bomba volta a ter proteção de SOC |
-| **A — Rede e leitura** | MikroTik + WireGuard; Modbus TCP habilitado no SmartLogger; N100/Pi lendo | 14 dias com SOC Modbus vs FusionSolar divergindo < 2 pp; túnel sem queda > 5 min |
+| **A — Rede e leitura** | MikroTik + WireGuard; Modbus TCP habilitado no SmartLogger; Pi lendo | 14 dias com SOC Modbus vs FusionSolar divergindo < 2 pp; túnel sem queda > 5 min |
 | **B — Pi em sombra** | Pi + Waveshare instalados, **relé não ligado ao contator**; Pi loga o que faria; VPS segue mandando no Tasmota | 14 dias em que decisão do Pi == decisão da VPS em 100 % dos eventos de borda |
 | **C — Pi assume** | relé do Waveshare no contator; VPS em STANDBY; curativo Tasmota removido | 30 dias sem divergência de retorno, 1 failover simulado com sucesso |
 | **D — Piscinão** | repete A→C com o 2º Pi + Waveshare | idem |
