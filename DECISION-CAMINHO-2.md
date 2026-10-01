@@ -24,7 +24,7 @@ Este documento propõe tirar as três dependências do caminho da proteção da 
 
 O dashboard **continua existindo** — vira supervisor: mostra, registra, permite alterar a faixa e comandar manualmente. Deixa de ser quem decide.
 
-**Custo aproximado:** Barragem R$ 3.000–4.000 · Piscinão R$ 1.000–1.500 (hardware já comprado não contado).
+**Custo aproximado (revisado 01/10):** Barragem **R$ 700–900** (2× Waveshare + SSD + USB-RS485) · Piscinão R$ 450–600 · opcional Shelly 3EM R$ 700–1.000. Hardware já comprado não contado.
 
 ---
 
@@ -54,32 +54,52 @@ Sonoff `DVES_65A7F8` fechou a conexão às 23:54 e nunca mais tentou. Zero alarm
 
 ---
 
-## 2. Arquitetura proposta
+## 2. Arquitetura proposta (revisada 2026-10-01 — Pi primário, VPS reserva, Waveshare como braço)
 
 ```
-                      ┌─────────────────────────────┐
-                      │   Dashboard (gamaserver)    │  SUPERVISOR
-                      │   lê por Modbus TCP via VPN │  mostra · registra · config · comando manual
-                      └──────────────┬──────────────┘
-                                     │ WireGuard (wg1 10.10.0.0/24 já existe)
-                                     ▼
-                      ┌─────────────────────────────┐
-                      │  MikroTik hAP ax lite       │  REDE
-                      │  WAN ← roteador Starlink    │  túnel sobrevive à troca de IP
-                      │  LAN: 3 portas (+ switch)   │
-                      └──┬──────────┬───────────┬───┘
-                         │          │           │ Ethernet
-          ┌──────────────▼──┐  ┌────▼─────┐  ┌──▼──────────────────┐
-          │ SmartLogger 3000│  │ PLC /    │  │ Pi 3B ou N100       │  TELEMETRIA
-          │ Modbus TCP:     │  │ concen-  │  │ lê tudo, publica,   │  + ponte
-          │ SOC, PV, carga  │  │ trador   │  │ estação via RS485   │
-          └─────────────────┘  └──┬───┬───┘  └─────────────────────┘
-                                  │   │
-                            contator   contato auxiliar
-                            da bomba   (retorno: bomba ligou de fato)
+ BARRAGEM (planta)                                           VPS (gamaserver)
+ ─────────────────────────────────────────────────           ──────────────────────────────
+                                                             Dashboard = SUPERVISOR + RESERVA
+  Starlink ──► MikroTik hAP ax lite ◄═══ WireGuard ════════► mostra · histórico · config ·
+               │ (túnel sobrevive à troca de IP do CGNAT)    comando manual.
+               │                                             Assume a bomba SÓ se o Pi ficar
+               │ cabo ethernet (3 portas LAN)                5 min sem heartbeat; devolve
+     ┌─────────┼───────────────────┐                         quando o heartbeat volta.
+     ▼         ▼                   ▼
+ SmartLogger   Raspberry Pi 3B     Waveshare Modbus POE ETH Relay (B)
+ 3000          (boot por SSD USB)  8 relés + 8 entradas digitais
+ ───────────   CÉREBRO             BRAÇO (burro, sem lógica)
+ SOC, PV,      roda o MESMO        relé 1 ───► bobina do contator ───► bomba
+ carga,        control-engine      entrada 1 ◄── contato auxiliar (bomba ligou de fato?)
+ bateria       da VPS; lê tudo,    comando "Flash ON 5 min" re-armado a cada 60 s
+ (Modbus TCP   decide, atua,       ⇒ sem Pi E sem VPS, o relé abre sozinho em ≤ 5 min
+  se MGCC off) publica, heartbeat  alimentação 7–36 V do nobreak (hAP não tem PoE-out)
+      ▲
+      │ USB-RS485: estação solarimétrica (sensores Modbus RTU)
 ```
 
-**Regra única de autoridade:** quem decide ligar/desligar pela faixa de SOC é **um** equipamento na planta. O dashboard nunca mais briga com ele (incidente de 30/04 foram duas lógicas na mesma bomba).
+**Três camadas, uma lógica só:**
+
+| Camada | Quem | Quando age |
+|---|---|---|
+| 1 — Primária | **Pi** na planta, mesmo código do `control-engine` | sempre que estiver vivo |
+| 2 — Reserva | **VPS** pelo túnel | só após 5 min sem heartbeat do Pi; devolve ao Pi quando ele volta |
+| 3 — Último recurso | **Waveshare** sozinho (Flash ON expira) | se Pi e VPS sumirem — abre o relé, bomba para |
+
+**Regra de autoridade:** nunca os dois cérebros ativos ao mesmo tempo (incidente de 30/04 foram duas lógicas na mesma bomba). O heartbeat é a única chave de troca.
+
+### 2.1 O que é lido, de onde, e se vai funcionar
+
+| Dado | Fonte | Status |
+|---|---|---|
+| Bomba ligou de fato (contato auxiliar) | entrada digital do Waveshare | ✅ é fio — funciona |
+| Estado do relé | Waveshare, Modbus TCP | ✅ |
+| SOC, PV, carga, bateria **em segundos, sem cota** | SmartLogger, Modbus TCP | ⚠️ depende de (1) `MGCC Mode = Disable` e (2) mapa de registradores (Apêndice A) |
+| SOC etc. — **fallback** | FusionSolar, como hoje | ✅ funciona hoje (15 min, rate limit); continua existindo |
+| Estação solarimétrica | USB-RS485 no Pi | ✅ se sensores Modbus RTU; analógicos exigem módulo extra |
+| Potência real da bomba (kW) | — | ❌ não nesta configuração (Shelly Pro 3EM, opcional) |
+
+**Atuação e proteção funcionam independentemente do Modbus do SmartLogger.** O Modbus só melhora a *qualidade* do SOC; se não vier, a leitura fica como hoje e a atuação fica muito melhor que hoje.
 
 ---
 
@@ -87,22 +107,21 @@ Sonoff `DVES_65A7F8` fechou a conexão às 23:54 e nunca mais tentou. Zero alarm
 
 ### 3.1 Já comprado
 
-**MikroTik hAP ax lite (L41G-2axD)** — 4 portas Gigabit, Wi-Fi 6 só 2,4 GHz, RouterOS 7 (WireGuard nativo), alimentação USB-C 5 V ou PoE-in na ether1. **Sem PoE-out**: cada equipamento precisa de alimentação própria. Com 1 porta WAN sobram 3 LAN — SmartLogger + PLC + Pi ocupam as três; o Shelly 3EM (LAN) ou qualquer quinto cabo exige um **switch Gigabit de 5 portas** (~R$ 80). O Wi-Fi 2,4 GHz serve só para o curativo Tasmota (§7).
+**MikroTik hAP ax lite (L41G-2axD)** — 4 portas Gigabit, Wi-Fi 6 só 2,4 GHz, RouterOS 7 (WireGuard nativo), alimentação USB-C 5 V ou PoE-in na ether1. **Sem PoE-out**: cada equipamento precisa de alimentação própria. Com 1 porta WAN sobram 3 LAN — SmartLogger + Waveshare + Pi ocupam as três; o Shelly 3EM (LAN) ou qualquer quinto cabo exige um **switch Gigabit de 5 portas** (~R$ 80). O Wi-Fi 2,4 GHz serve só para o curativo Tasmota (§7).
 
-**Raspberry Pi 3 Model B** (2×) — 1 vai para o Piscinão; o outro é **reserva**. Na Barragem o cérebro é o N100 (§3.2) por causa do cartão SD: Pi 3B boota de SD, a Barragem tem cortes abruptos, SD corrompe. Onde o Pi ficar: **boot por SSD USB** (~R$ 150) ou, no mínimo, filesystem em leitura + `log2ram`.
+**Raspberry Pi 3 Model B** (2×) — **1 na Barragem (cérebro), 1 no Piscinão.** Decisão do operador (01/10): o Pi é o primário na planta e a VPS é a reserva viva; isso torna o ponto fraco do Pi (cartão SD + cortes abruptos de energia) tolerável — se ele morrer, a VPS assume e o Waveshare abre o relé no pior caso. Mesmo assim: **boot por SSD USB** (~R$ 150) nos dois, watchdog de hardware (`/dev/watchdog`) ativado. O N100 saiu da lista.
 
-### 3.2 A comprar — Barragem (planta crítica)
+### 3.2 A comprar — Barragem (planta crítica) — revisado 01/10
 
-| Função | Recomendação | Alternativa | Ref. |
-|---|---|---|---|
-| **Proteção e comando da bomba** | **Siemens LOGO! 8.3 12/24RCE** — Ethernet, Modbus TCP cliente+servidor, 4 relés 10 A, 8 DI (4 viram AI 0–10 V), expansível, lógica em blocos | KinCony KC868-A8v3 (§3.3) | R$ 1.200–1.800 |
-| **Cérebro / telemetria / ponte** | **Mini PC fanless Intel N100 + SSD**, 12 V, ~8 W, watchdog na BIOS | Pi 3B + SSD USB | R$ 800–1.000 |
-| **Medição da bomba** | **Shelly Pro 3EM + 3 TCs** (trifásico, LAN) | — | R$ 700–1.000 |
-| **Estação solarimétrica** | adaptador **USB-RS485** no N100 (ou porta EMI do SmartLogger se a estação for compatível) | Waveshare RS485→PoE ETH se os sensores ficarem longe | R$ 30 |
-| Switch Gigabit 5 portas | qualquer | — | R$ 80 |
-| Fonte 24 V DC do nobreak | para LOGO!/PLC | — | R$ 100 |
+| Função | Escolha | Ref. |
+|---|---|---|
+| **Atuação + retorno do contator** | **Waveshare Modbus POE ETH Relay (B)** — 8 relés, 8 DI, Modbus TCP, DIN. Título do anúncio confirmado: *"Módulo de Relé Ethernet de 8 Canais (B) com Entrada Digital, Modbus RTU/TCP, PoE, Trilho"*. Variante **com fonte** (ou alimentar 12/24 V do nobreak); **2 unidades** (1 reserva) | R$ 250–300 cada |
+| **Cérebro** | Pi 3B (comprado) + **SSD USB** | R$ 150 |
+| **Estação solarimétrica** | adaptador USB-RS485 no Pi (ou porta EMI do SmartLogger se compatível) | R$ 30 |
+| Switch Gigabit 5 portas | só se passar de 3 cabos na LAN | R$ 80 |
+| *(opcional)* Medição da bomba | Shelly Pro 3EM + 3 TCs (trifásico, LAN) — o POWR316D da §7.15 está descartado: monofásico | R$ 700–1.000 |
 
-Por que LOGO! na Barragem: é o único da lista em que a proteção **não depende de nada que possa travar** — lê o SOC do SmartLogger por Modbus TCP e abre o contator sozinho, sem Linux, sem SD, sem internet. Representante no Brasil. O **POWR316D** da pendência §7.15 está descartado: é monofásico, a bomba de 30 cv é trifásica.
+Alternativas que perderam para o Waveshare nesta arquitetura (todas válidas, mais caras): **KinCony KC868-A8v3** (US$ 80, ESP32 + RS485 + regra em ESPHome), **ADAM-6266** (~R$ 1.700, watchdog de posição segura em hardware), **Siemens LOGO! 8.3** (~R$ 1.500, lógica embarcada — a opção "sem Linux", se um dia o Pi provar insuficiente).
 
 ### 3.3 A comprar — Piscinão (sem bomba automatizada ainda)
 
@@ -112,7 +131,7 @@ Por que LOGO! na Barragem: é o único da lista em que a proteção **não depen
 | Cérebro | Pi 3B (comprado) + SSD USB | R$ 150 |
 | Sensor analógico, se houver | Waveshare Modbus RTU Analog Input 8CH no RS485 do A8v3 | R$ 150 |
 
-Se o Piscinão virar crítico, migra para LOGO! e o A8v3 vira reserva.
+Alternativa mais barata e idêntica à Barragem: Waveshare (B) + USB-RS485 no Pi. O A8v3 só compensa se a estação do Piscinão precisar de entradas analógicas no concentrador.
 
 ### 3.4 Descartados, e por quê
 
@@ -122,37 +141,45 @@ Se o Piscinão virar crítico, migra para LOGO! e o A8v3 vira reserva.
 | ~~Waveshare Modbus POE ETH Relay (B)~~ **reabilitado 01/10** | Eu tinha descartado por "sem estado seguro". **Errado:** o comando *Flash ON* (coil `0x0200+ch`, duração `N × 100 ms`, máx. `0x7FFF` ≈ 54 min — verificado na wiki Waveshare) é um **dead-man switch**: o Pi manda "ligado por 5 min" a cada 60 s; se Pi e VPS sumirem, o relé abre sozinho em ≤ 5 min. Terceira camada **sem firmware**. Vira a opção mais barata viável (~R$ 250–300). Exigir a versão **(B)** (8 DI para o retorno do contator). Alimentar por 7–36 V do nobreak — o hAP ax lite não tem PoE-out. Sem RS485/AI: estação via USB-RS485 no Pi. Pendente: confirmar corrente dos contatos (tipicamente 10 A/250 V AC, folga para bobina de contator) e se o relé aceita 2 clientes TCP simultâneos (Pi + VPS). |
 | KC868-A16v3 | saída MOSFET (DC), não relé — não aciona bobina 220 V direto |
 | Relé no GPIO do Pi | sem isolamento; Pi vira ponto único de falha da bomba |
-| ADAM-6266 / Moxa / PiXtend / Revolution Pi | mais robustos, mais caros; voltam se o LOGO!/A8v3 falhar em campo |
+| ADAM-6266 / Moxa / PiXtend / Revolution Pi / LOGO! | mais robustos, mais caros; voltam se o Waveshare ou o Pi falharem em campo |
 
 ---
 
 ## 4. Software
 
-### 4.1 Lógica embarcada (LOGO! na Barragem)
+### 4.1 Lógica (no Pi — o mesmo `control-engine` da VPS)
 
-Reproduz **literalmente** o `decideAction` atual — `DECISION-RESPECT-CONFIG.md` vale para o PLC:
+O Pi roda **o mesmo código** que a VPS (`server/control-engine.ts`), não uma reimplementação. É isso que torna o failover seguro: os dois decidem exatamente igual. `DECISION-RESPECT-CONFIG.md` vale sem alteração:
 
 ```
-BLACKOUT : SOC ≤ socBlackout            → abre relé (sempre)
+BLACKOUT : SOC ≤ socBlackout               → abre relé (sempre)
 TURN_OFF : bomba ON  ∧ SOC ≤ socMinDesliga → abre relé
-TURN_ON  : bomba OFF ∧ SOC ≥ socMinReliga ∧ dentro da janela horária → fecha relé
-cooldown : respeitado entre manobras
-SOC inválido / SmartLogger mudo > N min   → abre relé (estado seguro)
+TURN_ON  : bomba OFF ∧ SOC ≥ socMinReliga ∧ janela horária ∧ SOC REAL → fecha relé
+cooldown : respeitado
+SOC inválido / fonte muda > N min          → abre relé (estado seguro)
 ```
 
-Sem projeção, sem ETA, sem margem — §14 continua valendo dentro do PLC. Os parâmetros ficam em registradores Modbus do LOGO! que o dashboard escreve; a UI atual de configuração continua sendo o lugar onde o operador muda a faixa.
+Atuação = escrever no Waveshare **"Flash ON, 300 s"** (coil `0x0200`, valor 3000) a cada 60 s enquanto a decisão for ON; para desligar, escrever OFF. Heartbeat para a VPS a cada 60 s (MQTT pelo túnel).
 
-### 4.2 Dashboard
+### 4.2 Dashboard (VPS)
 
-- **Um driver Modbus TCP** (`server/modbus.ts`, `modbus-serial`) serve para SmartLogger **e** LOGO!/A8v3. Stack única.
-- `pollSite` passa a ter **fonte preferencial Modbus** com **fallback FusionSolar** quando o Modbus não responder. A FusionSolar não sai — vira segunda opinião.
-- `control-engine` ganha um modo **SUPERVISOR**: não envia comando automático; registra o que o PLC fez (eventos/ações) e o que *faria*. O comando manual da UI vai para o PLC por Modbus.
-- Alarmes novos: `PLC_OFFLINE`, `MODBUS_SMARTLOGGER_OFFLINE`, `DIVERGENCIA_RETORNO` (relé fechou, contato auxiliar não confirmou).
+- **Driver Modbus TCP** único (`server/modbus.ts`, `modbus-serial`) para SmartLogger e Waveshare.
+- `control-engine` ganha modo **STANDBY**: enquanto o heartbeat do Pi chega, só registra (eventos, ações do Pi, o que *faria*). Sem heartbeat por 5 min → assume: passa a escrever no Waveshare pelo túnel, com o mesmo Flash ON. Heartbeat volta → devolve e registra `FAILOVER_RETURN`.
+- `pollSite`: fonte preferencial Modbus (pelo Pi ou direto via túnel), **fallback FusionSolar**. A FusionSolar não sai.
+- Comando manual da UI → vai ao Pi; se o Pi estiver mudo, direto ao Waveshare.
+- Alarmes novos: `PI_OFFLINE` (heartbeat parado), `FAILOVER_ATIVO`, `RELE_OFFLINE`, `MODBUS_SMARTLOGGER_OFFLINE`, `DIVERGENCIA_RETORNO` (relé fechou, contato auxiliar não confirmou).
 - `mqtt-tasmota.ts` fica intocado até o curativo (§7) sair de cena.
 
-### 4.3 Pi / N100
+### 4.3 Pi
 
-Serviço Python ou Node que: lê a estação por RS485, lê o PLC e o SmartLogger, publica no broker (local ou remoto via túnel), expõe healthcheck. Watchdog de hardware ativado (`/dev/watchdog` no Pi; BIOS no N100). Sem decisão de bomba.
+Serviço Node (mesmo repo, `USE_LOCAL_CONTROL=true`): lê SmartLogger (Modbus TCP) e estação (RS485), decide, atua no Waveshare, publica telemetria e heartbeat para a VPS. `/dev/watchdog` ativado; estado seguro na partida (abre o relé antes de ler SOC válido). Filesystem em SSD USB.
+
+### 4.4 Teste de bancada obrigatório antes da visita
+
+1. Waveshare: ligar/desligar por Modbus TCP; **Flash ON 300 s expira sozinho** (cronometrar); dois clientes TCP simultâneos (Pi + VPS).
+2. Pi: matar o processo com o relé armado → relé abre em ≤ 5 min; religar → re-arma.
+3. Failover: cortar o heartbeat → VPS assume em 5 min; devolver → VPS para de atuar.
+4. Divergência: fechar relé sem contato auxiliar → alarme.
 
 ---
 
@@ -162,22 +189,22 @@ Serviço Python ou Node que: lê a estação por RS485, lê o PLC e o SmartLogge
 |---|---|---|
 | **0 — Pré-requisitos** | Telegram configurado; curativo Tasmota instalado | alarme chega no celular; bomba volta a ter proteção de SOC |
 | **A — Rede e leitura** | MikroTik + WireGuard; Modbus TCP habilitado no SmartLogger; N100/Pi lendo | 14 dias com SOC Modbus vs FusionSolar divergindo < 2 pp; túnel sem queda > 5 min |
-| **B — PLC em sombra** | LOGO! instalado, lê SOC, **relé não ligado ao contator**; loga decisões | 14 dias em que decisão do PLC == decisão do dashboard em 100 % dos eventos de borda |
-| **C — PLC assume** | relé no contator; dashboard em SUPERVISOR; curativo Tasmota removido | 30 dias sem divergência de retorno e sem intervenção manual |
-| **D — Piscinão** | repete A→C com A8v3 | idem |
+| **B — Pi em sombra** | Pi + Waveshare instalados, **relé não ligado ao contator**; Pi loga o que faria; VPS segue mandando no Tasmota | 14 dias em que decisão do Pi == decisão da VPS em 100 % dos eventos de borda |
+| **C — Pi assume** | relé do Waveshare no contator; VPS em STANDBY; curativo Tasmota removido | 30 dias sem divergência de retorno, 1 failover simulado com sucesso |
+| **D — Piscinão** | repete A→C com o 2º Pi + Waveshare | idem |
 
-Cada fase: 1 mudança, validada, antes da próxima. Reversão de C = religar o Tasmota no contator e voltar `control-engine` para AUTO — 30 min, sem código.
+Cada fase: 1 mudança, validada, antes da próxima. Reversão de C = religar o Tasmota no contator e tirar a VPS de STANDBY — 30 min, sem código.
 
 ---
 
 ## 6. Roteiro da visita técnica (Barragem)
 
-1. **Antes de ir:** configurar MikroTik em bancada (WireGuard peer no gamaserver, DHCP, firewall via WG — usar `helios_mk_template_hardening`); gravar programa do LOGO! em bancada e testar com SOC simulado.
-2. **Energia:** 24 V DC a partir do nobreak para LOGO!, MikroTik (USB-C) e N100. Nada no circuito do inversor.
-3. **Rede:** Starlink → MikroTik WAN; SmartLogger, LOGO!, N100 nas LAN (+ switch se precisar).
-4. **SmartLogger:** habilitar Modbus TCP (firmware V300R024C10SPC211 suporta); anotar IP, unit-id e registradores de SOC/PV/carga; testar leitura do N100.
-5. **Quadro da bomba:** instalar **chave seccionadora/manual** acessível (lição de 17/09); relé do LOGO! → bobina do contator; contato auxiliar → DI do LOGO!; TCs do 3EM.
-6. **Validação no local:** ligar/desligar pela UI, confirmar retorno; cortar internet e confirmar que o LOGO! segue lendo SOC; simular SOC baixo e confirmar abertura.
+1. **Antes de ir:** configurar MikroTik em bancada (WireGuard peer no gamaserver, DHCP, firewall via WG — usar `helios_mk_template_hardening`); rodar o teste de bancada da §4.4 (Waveshare + Pi + failover).
+2. **Energia:** 12/24 V DC a partir do nobreak para Waveshare e Pi; MikroTik por USB-C. Nada no circuito do inversor.
+3. **Rede:** Starlink → MikroTik WAN; SmartLogger, Waveshare, Pi nas 3 LAN.
+4. **SmartLogger:** ver Apêndice A.5 (MGCC primeiro; depois Modbus TCP com whitelist do Pi); testar leitura do Pi.
+5. **Quadro da bomba:** instalar **chave seccionadora/manual** acessível (lição de 17/09); relé 1 do Waveshare → bobina do contator; contato auxiliar → entrada 1 do Waveshare.
+6. **Validação no local:** ligar/desligar pela UI, confirmar retorno; cortar internet e confirmar que o Pi segue lendo SOC e atuando; parar o Pi e cronometrar o relé abrir.
 7. **Starlink:** app → Estatísticas → Quedas, registrar a causa das quedas de madrugada.
 8. Retirar o Sonoff morto.
 
@@ -201,7 +228,7 @@ Qualquer Sonoff/Tasmota do Mercado Livre, configurado com o tópico `bess_sonoff
 
 - [ ] Aprovado como está
 - [ ] Aprovado com mudanças: ________________________________
-- [ ] Barragem com KC868-A8v3 em vez de LOGO! (economia ~R$ 1.000, proteção passa a depender do firmware ESPHome)
+- [ ] Trocar o Waveshare por KC868-A8v3 / ADAM-6266 / LOGO! (mais caro; ver §3.2)
 - [ ] Rejeitado
 
 *Após aprovação: atualizar `CLAUDE.md` §4 (timeline), §7 (pendências) e iniciar Fase 0.*
