@@ -69,7 +69,7 @@ Sonoff `DVES_65A7F8` fechou a conexão às 23:54 e nunca mais tentou. Zero alarm
  SmartLogger   Raspberry Pi 3B     Waveshare Modbus POE ETH Relay (B)
  3000          (boot por SSD USB)  8 relés + 8 entradas digitais
  ───────────   CÉREBRO             BRAÇO (burro, sem lógica)
- SOC, PV,      roda o MESMO        relé 1 ───► bobina do contator ───► bomba
+ SOC, PV,      roda o MESMO        relé 1 ─► bobina do contator ─► inversores de frequência ─► bombas
  carga,        control-engine      entrada 1 ◄── contato auxiliar (bomba ligou de fato?)
  bateria       da VPS; lê tudo,    comando "Flash ON 5 min" re-armado a cada 60 s
  (Modbus TCP   decide, atua,       ⇒ sem Pi E sem VPS, o relé abre sozinho em ≤ 5 min
@@ -153,9 +153,25 @@ Fonte: `gdrive:TI/CLAUDE SERVIDOR/waveshare manual/manual_modbus_poe_eth_relay_b
 - **Flash ON é FC05 com valor não booleano** (`0x0200+canal`, valor = N × 100 ms; 300 s = `0x0BB8`). Bibliotecas Modbus genéricas só enviam `FF00`/`0000` no FC05 e **rejeitam** isso — o driver precisa montar o quadro na mão (12 bytes em Modbus TCP: MBAP + `01 05 02 00 0B B8`).
 - **Eco não prova comutação.** Em modo Linkage o relé ecoa a escrita e não comuta. Sempre confirmar por FC01 (estado da bobina) **e** pela entrada digital do contato auxiliar — é o alarme `DIVERGENCIA_RETORNO`. Na partida, ler `0x1000–0x1007` e exigir modo `0` (Normal) nos canais usados; ler `0x8000` e exigir protocolo V2 (`0x00C8`).
 - **Contato auxiliar do contator = entrada de contato seco:** ligar entre `DIx` e `DGND`, deixando o borne `COM` **das entradas** sem ligação. Esse COM não é o comum do relé.
-- **Bobina de contator é carga indutiva:** prever supressor RC ou varistor na bobina; fusível/disjuntor no circuito de comando; interromper a fase pelo par COM–NO.
+- **Bobina de contator é carga indutiva:** ao abrir o relé, o campo da bobina devolve um pico de tensão que fagulha nos contatos (desgaste) e gera ruído que pode travar eletrônica próxima. Prever **supressor** em paralelo com a bobina (módulo RC ou varistor de encaixe do fabricante do contator, R$ 10–30). Recomendado, não obrigatório. Fusível/disjuntor no circuito de comando; interromper a fase pelo par COM–NO.
 - **Rede:** web admin e portas de controle sem criptografia. No MikroTik, liberar o relé só para o IP do Pi e para o IP da VPS no túnel; nada exposto à internet.
 - Físico: 175 × 90 × 40 mm, trilho DIN, −15 a 70 °C, 0,5–3,8 W. Estado dos relés ao energizar segue **não documentado** (teste de bancada).
+
+### 3.6 Cadeia de acionamento real e opção futura (informado pelo operador, 02/10)
+
+O contator **não aciona as bombas diretamente**: ele alimenta os **inversores de frequência** de cada bomba. A cadeia é `relé → bobina do contator → inversores → bombas`. Hoje ligar/desligar a bomba significa **energizar/desenergizar os inversores**, que partem sozinhos ao receber energia (por isso a bomba voltou a rodar no instante do Black Start em 18/09).
+
+Para 1–2 manobras por dia isso é aceitável; o que os fabricantes de inversor desaconselham é ciclar a alimentação várias vezes por hora (estresse do circuito de pré-carga). Consequência para o software: **o cooldown entre manobras continua obrigatório**, inclusive depois de uma abertura pelo dead-man — nunca refechar o relé em seguida.
+
+| | Cortar a alimentação do inversor (hoje) | Comandar pela entrada digital do inversor |
+|---|---|---|
+| Partida/parada | secas | em rampa, suave para a tubulação |
+| Consumo noturno | zero (inversor desligado) | inversor em espera |
+| Supressor | recomendado | desnecessário (sinal de baixa corrente) |
+| Bombas | as duas juntas | 1 relé por inversor: dá para ligar só uma |
+| Mudança no quadro | nenhuma | refazer o comando dos inversores |
+
+**Decisão para a instalação inicial:** manter como está — só trocar o dispositivo Wi-Fi pelo Waveshare, com supressor na bobina. A segunda coluna fica registrada como melhoria futura (escalonar bombas com SOC baixo); o Waveshare tem relés sobrando para isso.
 
 ---
 
@@ -219,7 +235,7 @@ Cada fase: 1 mudança, validada, antes da próxima. Reversão de C = religar o T
 2. **Energia:** 12/24 V DC a partir do nobreak para Waveshare e Pi; MikroTik por USB-C. Nada no circuito do inversor.
 3. **Rede:** Starlink → MikroTik WAN; SmartLogger, Waveshare, Pi nas 3 LAN.
 4. **SmartLogger:** ver Apêndice A.5 (MGCC primeiro; depois Modbus TCP com whitelist do Pi); testar leitura do Pi.
-5. **Quadro da bomba:** instalar **chave seccionadora/manual** acessível (lição de 17/09); relé 1 do Waveshare → bobina do contator; contato auxiliar → entrada 1 do Waveshare.
+5. **Quadro da bomba:** instalar **chave seccionadora/manual** acessível (lição de 17/09); relé 1 do Waveshare → bobina do contator que alimenta os inversores, **com supressor na bobina**; contato auxiliar → entrada 1 do Waveshare. Anotar marca/modelo dos inversores e como está o comando de partida (§3.6).
 6. **Validação no local:** ligar/desligar pela UI, confirmar retorno; cortar internet e confirmar que o Pi segue lendo SOC e atuando; parar o Pi e cronometrar o relé abrir.
 7. **Starlink:** app → Estatísticas → Quedas, registrar a causa das quedas de madrugada.
 8. Retirar o Sonoff morto.
