@@ -143,6 +143,20 @@ Alternativa mais barata e idêntica à Barragem: Waveshare (B) + USB-RS485 no Pi
 | Relé no GPIO do Pi | sem isolamento; Pi vira ponto único de falha da bomba |
 | ADAM-6266 / Moxa / PiXtend / Revolution Pi / LOGO! | mais robustos, mais caros; voltam se o Waveshare ou o Pi falharem em campo |
 
+### 3.5 Waveshare (B) — notas de integração (do manual PT-BR, 02/10)
+
+Fonte: `gdrive:TI/CLAUDE SERVIDOR/waveshare manual/manual_modbus_poe_eth_relay_b_ptbr.{md,pdf}` (compilado da wiki e da ficha oficiais, SKU 27876).
+
+- **De fábrica ele NÃO fala Modbus TCP**: fala Modbus **RTU encapsulado em TCP** (`Transfer Protocol = None`, com CRC, porta própria — o exemplo oficial usa 4196). Para Modbus TCP na **502** é preciso selecionar `Modbus TCP protocol` no VirCom. Qualquer um dos dois serve ao Pi; escolher um e não misturar (cliente Modbus TCP na porta RTU não responde).
+- **`Modbus Gateway Type = Multi-host non-storage`** é obrigatório nos dois casos. É a configuração de **múltiplos clientes** — indício forte de que Pi + VPS simultâneos funcionam; o tipo "com armazenamento" faz sondagens que o relé não responde. Segue como teste de bancada.
+- **IP:** não presumir. `192.168.1.254` é só o valor pós-reset; achar pelo `Auto Search` do VirCom ou pelo lease DHCP no MikroTik. Depois de conhecido o IP, há **interface web** de configuração (senha vazia ou `123456` conforme o lote — **definir senha**).
+- **Flash ON é FC05 com valor não booleano** (`0x0200+canal`, valor = N × 100 ms; 300 s = `0x0BB8`). Bibliotecas Modbus genéricas só enviam `FF00`/`0000` no FC05 e **rejeitam** isso — o driver precisa montar o quadro na mão (12 bytes em Modbus TCP: MBAP + `01 05 02 00 0B B8`).
+- **Eco não prova comutação.** Em modo Linkage o relé ecoa a escrita e não comuta. Sempre confirmar por FC01 (estado da bobina) **e** pela entrada digital do contato auxiliar — é o alarme `DIVERGENCIA_RETORNO`. Na partida, ler `0x1000–0x1007` e exigir modo `0` (Normal) nos canais usados; ler `0x8000` e exigir protocolo V2 (`0x00C8`).
+- **Contato auxiliar do contator = entrada de contato seco:** ligar entre `DIx` e `DGND`, deixando o borne `COM` **das entradas** sem ligação. Esse COM não é o comum do relé.
+- **Bobina de contator é carga indutiva:** prever supressor RC ou varistor na bobina; fusível/disjuntor no circuito de comando; interromper a fase pelo par COM–NO.
+- **Rede:** web admin e portas de controle sem criptografia. No MikroTik, liberar o relé só para o IP do Pi e para o IP da VPS no túnel; nada exposto à internet.
+- Físico: 175 × 90 × 40 mm, trilho DIN, −15 a 70 °C, 0,5–3,8 W. Estado dos relés ao energizar segue **não documentado** (teste de bancada).
+
 ---
 
 ## 4. Software
@@ -176,9 +190,9 @@ Serviço Node (mesmo repo, `USE_LOCAL_CONTROL=true`): lê SmartLogger (Modbus TC
 
 ### 4.4 Teste de bancada obrigatório antes da visita
 
-0. Waveshare: configurar pelo **Vircom** (Windows) — IP fixo na LAN da planta, protocolo **Modbus TCP**; conferir modo de entrada **Normal** nos 8 canais.
+0. Waveshare: achar pelo `Auto Search` do **VirCom** (Windows); IP fixo na LAN da planta; `Transfer Protocol = Modbus TCP protocol` (porta 502) e **`Multi-host non-storage`**; definir senha da web; ler `0x8000` (V2) e `0x1000–0x1007` (modo Normal nos 8 canais). Tudo **sem carga ligada**.
 1. Waveshare: ligar/desligar por Modbus TCP; **Flash ON 300 s expira sozinho** (cronometrar); **estado dos relés ao energizar** (tem que ser aberto); dois clientes TCP simultâneos (Pi + VPS). **Se só aceitar 1 conexão:** o Pi abre e fecha o socket a cada escrita (60 s) em vez de mantê-lo aberto, e a VPS em STANDBY não conecta — assim o socket está livre quando ela precisar assumir.
-1b. Entrada digital com o contato auxiliar do contator (contato seco): validar a ligação "passive input" e a leitura por função 02.
+1b. Entrada digital com contato seco entre `DI1` e `DGND` (COM das entradas solto): ler por função 02. Enviar Flash ON com quadro montado à mão (`01 05 02 00 0B B8`) e confirmar por FC01 + DI.
 2. Pi: matar o processo com o relé armado → relé abre em ≤ 5 min; religar → re-arma.
 3. Failover: cortar o heartbeat → VPS assume em 5 min; devolver → VPS para de atuar.
 4. Divergência: fechar relé sem contato auxiliar → alarme.
