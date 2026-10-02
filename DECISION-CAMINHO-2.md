@@ -138,7 +138,7 @@ Alternativa mais barata e idêntica à Barragem: Waveshare (B) + USB-RS485 no Pi
 | | Motivo |
 |---|---|
 | Qualquer coisa **Wi-Fi** na cadeia de comando (Sonoff, POWR316D, Waveshare ESP32-S3, KC868-A6) | causa raiz dos dois incidentes |
-| ~~Waveshare Modbus POE ETH Relay (B)~~ **reabilitado 01/10** | Eu tinha descartado por "sem estado seguro". **Errado:** o comando *Flash ON* (coil `0x0200+ch`, duração `N × 100 ms`, máx. `0x7FFF` ≈ 54 min — verificado na wiki Waveshare) é um **dead-man switch**: o Pi manda "ligado por 5 min" a cada 60 s; se Pi e VPS sumirem, o relé abre sozinho em ≤ 5 min. Terceira camada **sem firmware**. Vira a opção mais barata viável (~R$ 250–300). Exigir a versão **(B)** (8 DI para o retorno do contator). Alimentar por 7–36 V do nobreak — o hAP ax lite não tem PoE-out. Sem RS485/AI: estação via USB-RS485 no Pi. Pendente: confirmar corrente dos contatos (tipicamente 10 A/250 V AC, folga para bobina de contator) e se o relé aceita 2 clientes TCP simultâneos (Pi + VPS). |
+| ~~Waveshare Modbus POE ETH Relay (B)~~ **reabilitado 01/10** | Eu tinha descartado por "sem estado seguro". **Errado:** o comando *Flash ON* (coil `0x0200+ch`, duração `N × 100 ms`, máx. `0x7FFF` ≈ 54 min — verificado na wiki Waveshare) é um **dead-man switch**: o Pi manda "ligado por 5 min" a cada 60 s; se Pi e VPS sumirem, o relé abre sozinho em ≤ 5 min. Terceira camada **sem firmware**. Vira a opção mais barata viável (~R$ 250–300). Exigir a versão **(B)** (8 DI para o retorno do contator). Alimentar por 7–36 V do nobreak — o hAP ax lite não tem PoE-out. Sem RS485/AI: estação via USB-RS485 no Pi. **Confirmado na wiki da versão (B) em 02/10:** contatos **1NO+1NC, ≤10 A 250 V AC / 30 V DC**; **8 DI 5–36 V**, NPN/PNP, optoacoplador bidirecional, lidas por função `02` em `0x0000–0x0007`; Flash ON `0x0200–0x0207` e Flash OFF `0x0400–0x0407`; modos de entrada Normal (padrão) / Linkage / Toggle / Edge em `0x1000–0x1007` — **manter Normal**; Modbus TCP porta 502, unit id `0x01`, IP de fábrica `192.168.1.254`, **modo Modbus TCP precisa ser ativado pelo software Vircom (Windows)**; PoE 802.3af ou 7–36 V, 0,5–3,8 W. **Não documentado:** conexões TCP simultâneas e estado dos relés ao energizar — testar em bancada. |
 | KC868-A16v3 | saída MOSFET (DC), não relé — não aciona bobina 220 V direto |
 | Relé no GPIO do Pi | sem isolamento; Pi vira ponto único de falha da bomba |
 | ADAM-6266 / Moxa / PiXtend / Revolution Pi / LOGO! | mais robustos, mais caros; voltam se o Waveshare ou o Pi falharem em campo |
@@ -176,7 +176,9 @@ Serviço Node (mesmo repo, `USE_LOCAL_CONTROL=true`): lê SmartLogger (Modbus TC
 
 ### 4.4 Teste de bancada obrigatório antes da visita
 
-1. Waveshare: ligar/desligar por Modbus TCP; **Flash ON 300 s expira sozinho** (cronometrar); dois clientes TCP simultâneos (Pi + VPS).
+0. Waveshare: configurar pelo **Vircom** (Windows) — IP fixo na LAN da planta, protocolo **Modbus TCP**; conferir modo de entrada **Normal** nos 8 canais.
+1. Waveshare: ligar/desligar por Modbus TCP; **Flash ON 300 s expira sozinho** (cronometrar); **estado dos relés ao energizar** (tem que ser aberto); dois clientes TCP simultâneos (Pi + VPS). **Se só aceitar 1 conexão:** o Pi abre e fecha o socket a cada escrita (60 s) em vez de mantê-lo aberto, e a VPS em STANDBY não conecta — assim o socket está livre quando ela precisar assumir.
+1b. Entrada digital com o contato auxiliar do contator (contato seco): validar a ligação "passive input" e a leitura por função 02.
 2. Pi: matar o processo com o relé armado → relé abre em ≤ 5 min; religar → re-arma.
 3. Failover: cortar o heartbeat → VPS assume em 5 min; devolver → VPS para de atuar.
 4. Divergência: fechar relé sem contato auxiliar → alarme.
