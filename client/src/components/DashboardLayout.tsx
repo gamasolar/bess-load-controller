@@ -21,6 +21,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { LOGIN_PATH } from "@/const";
+import { trpc } from "@/lib/trpc";
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   LayoutDashboard,
@@ -144,7 +145,9 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const menuItems = isAdmin ? [...baseMenu, ...adminMenu] : baseMenu;
+  const { data: plantSites } = trpc.bess.sites.useQuery(undefined, { staleTime: 5 * 60_000 });
+  const plantMenu = (plantSites ?? []).map((s) => ({ icon: Battery, label: s.name, path: `/planta/${s.slug}` }));
+  const menuItems = isAdmin ? [...baseMenu, ...plantMenu, ...adminMenu] : [...baseMenu, ...plantMenu];
   const activeMenuItem = menuItems.find((item) => item.path === location);
   const isMobile = useIsMobile();
 

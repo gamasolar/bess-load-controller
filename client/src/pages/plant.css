@@ -1,0 +1,465 @@
+/*
+ * Tela da planta (telemetria completa). Tudo escopado em .plant para não
+ * alterar as telas de operação existentes.
+ *
+ * Paleta tirada do lugar: água funda da represa, margem de laterita,
+ * céu claro e o âmbar da marca.
+ */
+.plant {
+  --pl-deep: #071f27;
+  --pl-water: #0e3340;
+  --pl-shore: #1f5262;
+  --pl-sky: #e4f0f1;
+  --pl-mist: #9db8bd;
+  --pl-sun: #f4a636;
+  --pl-clay: #d4603a;
+  --pl-tide: #5cc6c0;
+
+  --pl-display: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
+  --pl-text: "IBM Plex Sans", system-ui, sans-serif;
+
+  margin: -1rem;
+  min-height: 100%;
+  background: var(--pl-deep);
+  color: var(--pl-sky);
+  font-family: var(--pl-text);
+  font-size: 1rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+@media (min-width: 1024px) {
+  .plant { margin: -1.5rem; }
+}
+.plant :focus-visible {
+  outline: 2px solid var(--pl-sun);
+  outline-offset: 3px;
+}
+
+/* ── Abertura: a planta de verdade ─────────────────────────────── */
+.plant-hero {
+  position: relative;
+  min-height: clamp(13rem, 30vh, 19rem);
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+  isolation: isolate;
+}
+.plant-hero-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: -2;
+  filter: saturate(0.85) contrast(1.05);
+}
+.plant-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(to top, var(--pl-deep) 2%, rgb(7 31 39 / 0.72) 38%, rgb(7 31 39 / 0.15) 75%),
+    linear-gradient(to right, rgb(7 31 39 / 0.55), transparent 65%);
+}
+.plant-hero-inner {
+  width: 100%;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 3.5rem 1.25rem 1.25rem;
+}
+.plant-nav {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  align-items: center;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 1rem 1.25rem;
+  font-size: 0.875rem;
+}
+.plant-nav a {
+  color: var(--pl-sky);
+  text-decoration: none;
+  padding: 0.25rem 0;
+  border-bottom: 2px solid transparent;
+  opacity: 0.8;
+}
+.plant-nav a:hover { opacity: 1; }
+.plant-nav a[aria-current="page"] {
+  opacity: 1;
+  border-bottom-color: var(--pl-sun);
+}
+.plant-nav .plant-back { margin-right: auto; }
+
+.plant-name {
+  font-family: var(--pl-display);
+  font-weight: 700;
+  font-size: 1.125rem;
+  letter-spacing: 0.01em;
+  color: var(--pl-sun);
+  margin: 0 0 0.5rem;
+}
+.plant-sentence {
+  font-family: var(--pl-display);
+  font-weight: 600;
+  font-size: clamp(1.35rem, 2.6vw, 2.25rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  max-width: 34ch;
+  margin: 0;
+  text-wrap: balance;
+}
+.plant-fresh {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--pl-mist);
+}
+.plant-fresh[data-stale="true"] { color: var(--pl-clay); }
+
+/* ── Estrutura das seções ──────────────────────────────────────── */
+.plant-body {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 0 1.25rem 4rem;
+}
+.plant-section { padding-top: 1.75rem; }
+.plant-section > h2 {
+  font-family: var(--pl-display);
+  font-weight: 600;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.25rem;
+}
+.plant-section > .plant-lead {
+  color: var(--pl-mist);
+  margin: 0 0 1.5rem;
+  max-width: 68ch;
+}
+.plant-note {
+  color: var(--pl-mist);
+  font-size: 0.875rem;
+  max-width: 68ch;
+}
+.plant-warn { color: var(--pl-clay); }
+
+/* ── Energia agora: sol → reservatórios → consumo ──────────────── */
+.plant-now {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(3rem, 0.8fr) auto minmax(3rem, 0.8fr) minmax(9rem, 1fr);
+  align-items: center;
+  gap: 1rem;
+}
+.plant-end .plant-figure {
+  font-family: var(--pl-display);
+  font-weight: 700;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.plant-end .plant-figure small {
+  font-family: var(--pl-text);
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--pl-mist);
+  margin-left: 0.3rem;
+  letter-spacing: 0;
+}
+.plant-end p { margin: 0.35rem 0 0; color: var(--pl-mist); }
+.plant-end h3 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 500; }
+.plant-end--sun .plant-figure { color: var(--pl-sun); }
+.plant-end--load { text-align: right; }
+
+.plant-flow {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--pl-shore);
+  position: relative;
+  overflow: hidden;
+}
+.plant-flow[data-on="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, var(--flow, var(--pl-sun)) 0 14px, transparent 14px 28px);
+  animation: plant-run 1.1s linear infinite;
+}
+@keyframes plant-run {
+  from { transform: translateX(-28px); }
+  to { transform: translateX(0); }
+}
+
+.plant-tanks { display: flex; gap: 1.75rem; justify-content: center; }
+
+/* Reservatório: o SOC como nível d'água, com a régua da faixa configurada. */
+.tank { display: grid; grid-template-columns: auto auto; column-gap: 0.5rem; }
+.tank-well {
+  position: relative;
+  width: 7rem;
+  height: 12rem;
+  border: 2px solid var(--pl-shore);
+  border-top: 0;
+  border-radius: 0 0 0.75rem 0.75rem;
+  background: linear-gradient(to bottom, rgb(31 82 98 / 0.12), rgb(31 82 98 / 0.3));
+  overflow: hidden;
+}
+.tank-water {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--level, 0%);
+  background: linear-gradient(to bottom, var(--pl-tide), #1f7f86 85%);
+  transition: height 1.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.tank[data-low="true"] .tank-water {
+  background: linear-gradient(to bottom, var(--pl-clay), #7d2f1a 85%);
+}
+.tank-water::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -10%;
+  width: 120%;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(228 240 241 / 0.55);
+}
+.tank[data-moving="true"] .tank-water::before { animation: plant-sway 3.2s ease-in-out infinite alternate; }
+@keyframes plant-sway {
+  from { transform: translateX(-4%) scaleY(0.7); }
+  to { transform: translateX(4%) scaleY(1.3); }
+}
+.tank-read {
+  position: absolute;
+  inset: auto 0 0.75rem 0;
+  text-align: center;
+  font-family: var(--pl-display);
+  font-weight: 700;
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--pl-deep);
+  text-shadow: 0 0 12px rgb(228 240 241 / 0.5);
+}
+.tank[data-shallow="true"] .tank-read { color: var(--pl-sky); text-shadow: none; bottom: calc(var(--level) + 0.6rem); }
+.tank-ruler { position: relative; width: 5.25rem; height: 12rem; font-size: 0.75rem; color: var(--pl-mist); }
+.tank-mark {
+  position: absolute;
+  left: 0;
+  bottom: var(--at);
+  transform: translateY(50%);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.tank-mark::before { content: ""; width: 0.6rem; height: 2px; background: currentColor; }
+.tank-mark[data-kind="off"] { color: var(--pl-clay); }
+.tank-mark[data-kind="on"] { color: var(--pl-tide); }
+.tank-mark[data-kind="blackout"] { color: var(--pl-sky); }
+.tank-caption { grid-column: 1 / -1; margin-top: 0.75rem; font-size: 0.875rem; }
+.tank-caption strong { display: block; font-weight: 600; }
+.tank-caption span { color: var(--pl-mist); }
+
+@media (max-width: 760px) {
+  .plant-now { grid-template-columns: 1fr; justify-items: start; gap: 1.25rem; }
+  .plant-flow { width: 4px; height: 2.5rem; margin-left: 1rem; }
+  .plant-flow[data-on="true"]::after {
+    background: repeating-linear-gradient(180deg, var(--flow, var(--pl-sun)) 0 14px, transparent 14px 28px);
+    animation-name: plant-run-y;
+  }
+  .plant-end--load { text-align: left; }
+  .plant-tanks { justify-content: flex-start; flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  .strings-axis span:not(:nth-child(5n + 1)) { visibility: hidden; }
+}
+@keyframes plant-run-y {
+  from { transform: translateY(-28px); }
+  to { transform: translateY(0); }
+}
+
+/* ── Inversores ────────────────────────────────────────────────── */
+.inv-list { display: grid; gap: 2.5rem; }
+.inv {
+  padding-top: 0.5rem;
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) 2fr;
+  gap: 1.5rem 3rem;
+}
+@media (max-width: 860px) { .inv { grid-template-columns: 1fr; } }
+.inv h3 { font-family: var(--pl-display); font-size: 1.25rem; font-weight: 600; margin: 0; }
+.inv-serial { color: var(--pl-mist); font-size: 0.875rem; margin: 0.1rem 0 0.75rem; }
+.inv-state { margin: 0 0 1rem; }
+.inv-state::before {
+  content: "";
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+  background: var(--pl-mist);
+}
+.inv-state[data-tone="ok"]::before { background: var(--pl-tide); }
+.inv-state[data-tone="bad"]::before { background: var(--pl-clay); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem 1.5rem; margin: 0; }
+.facts dt { color: var(--pl-mist); font-size: 0.875rem; }
+.facts dd { margin: 0; font-size: 1.25rem; font-weight: 500; }
+.facts dd small { font-size: 0.875rem; color: var(--pl-mist); font-weight: 400; margin-left: 0.2rem; }
+
+.inv-detail h4 { font-size: 0.9375rem; font-weight: 500; margin: 0 0 0.6rem; }
+.inv-detail h4 + .plant-note { margin: -0.4rem 0 0.75rem; }
+.inv-detail h4:not(:first-child), .inv-detail [data-sec] + [data-sec] { margin-top: 1.75rem; }
+.inv-detail [data-sec] + [data-sec] > h4:first-child { margin-top: 0; }
+
+/* Campo de strings: cada coluna é uma string; a altura é a corrente. */
+.strings { display: flex; gap: 3px; align-items: flex-end; height: 5.5rem; }
+.strings button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: rgb(31 82 98 / 0.28);
+  border-radius: 2px 2px 0 0;
+  display: flex;
+  align-items: flex-end;
+  cursor: default;
+}
+.strings button i {
+  display: block;
+  width: 100%;
+  height: var(--h, 0%);
+  min-height: 2px;
+  background: var(--pl-sun);
+  border-radius: 2px 2px 0 0;
+  transition: height 0.8s ease;
+}
+.strings button[data-idle="true"] i { background: var(--pl-shore); }
+.strings-axis { display: flex; gap: 3px; font-size: 0.6875rem; color: var(--pl-mist); margin-top: 0.25rem; }
+.strings-axis span { flex: 1 1 0; min-width: 0; text-align: center; overflow: hidden; }
+.strings-pick { min-height: 1.5rem; margin: 0.5rem 0 0; font-size: 0.875rem; color: var(--pl-mist); }
+
+.mppt { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 0.35rem 2rem; margin: 0; padding: 0; list-style: none; }
+.mppt li { display: grid; grid-template-columns: 4.2rem 1fr 5.2rem; gap: 0.75rem; align-items: center; font-size: 0.875rem; }
+.mppt li > span:first-child { color: var(--pl-mist); }
+.mppt li > span:last-child { text-align: right; }
+.mppt-bar { height: 0.5rem; background: rgb(31 82 98 / 0.28); border-radius: 0.25rem; overflow: hidden; }
+.mppt-bar i { display: block; height: 100%; width: var(--w, 0%); background: var(--pl-sun); border-radius: 0.25rem; }
+.mppt li[data-empty="true"] > span:last-child { color: var(--pl-clay); }
+
+.phases { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+.phases th { text-align: right; font-weight: 400; color: var(--pl-mist); font-size: 0.875rem; padding: 0.25rem 0 0.25rem 1rem; }
+.phases th:first-child, .phases td:first-child { text-align: left; padding-left: 0; color: var(--pl-mist); }
+.phases td { text-align: right; padding: 0.3rem 0 0.3rem 1rem; border-top: 1px solid rgb(31 82 98 / 0.5); }
+
+/* ── Histórico ─────────────────────────────────────────────────── */
+.plant-picks { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.plant-picks button {
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--pl-sky);
+  background: transparent;
+  border: 1px solid var(--pl-shore);
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+  cursor: pointer;
+}
+.plant-picks button[aria-pressed="true"] { background: var(--pl-sky); color: var(--pl-deep); border-color: var(--pl-sky); }
+.plant-picks .plant-gap { margin-left: auto; }
+.plant-chart { height: min(20rem, 45vh); }
+.plant-tip {
+  background: var(--pl-water);
+  border: 1px solid var(--pl-shore);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+.plant-tip p { margin: 0; }
+.plant-tip p:first-child { color: var(--pl-mist); margin-bottom: 0.2rem; }
+
+/* ── Todas as leituras ─────────────────────────────────────────── */
+.all details { border-top: 1px solid var(--pl-shore); }
+.all details:last-child { border-bottom: 1px solid var(--pl-shore); }
+.all summary {
+  cursor: pointer;
+  padding: 0.9rem 0;
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  font-weight: 500;
+}
+.all summary span { color: var(--pl-mist); font-weight: 400; font-size: 0.875rem; margin-left: auto; }
+.all-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 1.5rem 2.5rem; padding: 0.5rem 0 1.75rem; }
+.all-groups h4 { margin: 0 0 0.4rem; font-size: 0.875rem; font-weight: 600; color: var(--pl-sun); }
+.all-groups dl { margin: 0; }
+.all-groups dl > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.22rem 0; border-top: 1px solid rgb(31 82 98 / 0.4); font-size: 0.875rem; }
+.all-groups dt { color: var(--pl-mist); }
+.all-groups dd { margin: 0; text-align: right; white-space: nowrap; }
+
+.plant-empty { padding: 3rem 1.25rem; max-width: 40rem; margin: 0 auto; color: var(--pl-mist); }
+
+@media (prefers-reduced-motion: reduce) {
+  .plant-flow[data-on="true"]::after,
+  .tank[data-moving="true"] .tank-water::before { animation: none; }
+  .tank-water, .strings button i { transition: none; }
+}
+
+/* ── Abas: cada assunto cabe numa tela ─────────────────────────── */
+.plant-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 1.5rem;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+  background: var(--pl-deep);
+  border-bottom: 1px solid var(--pl-shore);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.plant-tabs button {
+  font: inherit;
+  color: var(--pl-mist);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.85rem 0;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.plant-tabs button[aria-selected="true"] { color: var(--pl-sky); border-bottom-color: var(--pl-sun); font-weight: 500; }
+@media (max-width: 760px) {
+  .plant-now { gap: 0.75rem; }
+  .plant-flow { height: 1.25rem; }
+  .facts { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem 1rem; }
+  .facts dd { font-size: 1.05rem; }
+}
+@media (max-width: 760px) {
+  /* No celular: geração e consumo lado a lado, baterias logo abaixo. */
+  .plant-now { grid-template-columns: 1fr 1fr; justify-items: stretch; }
+  .plant-now > .plant-flow { display: none; }
+  .plant-now > .plant-end--sun { order: 1; }
+  .plant-now > .plant-end--load { order: 2; text-align: right; }
+  .plant-now > .plant-tanks { order: 3; grid-column: 1 / -1; justify-content: center; margin-top: 0.5rem; }
+}
+/* Marcas próximas (ex.: 25% e 30%) não se sobrepõem: uma sobe, a outra desce. */
+.tank-mark[data-kind="on"] { transform: translateY(1px); align-items: flex-end; line-height: 1; }
+.tank-mark[data-kind="off"] { transform: translateY(calc(100% - 1px)); align-items: flex-start; line-height: 1; }
+
+/* Inversor em partes: o seletor só existe no celular. */
+.inv-parts { display: none; }
+@media (max-width: 860px) {
+  .inv-parts { display: flex; margin-bottom: 1rem; }
+  .inv [data-sec] { display: none; }
+  .inv[data-part="resumo"] [data-sec="resumo"] { display: grid; }
+  .inv[data-part="strings"] [data-sec="strings"],
+  .inv[data-part="saida"] [data-sec="saida"] { display: block; margin-top: 0; }
+  .inv { gap: 0; }
+}

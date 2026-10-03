@@ -7,6 +7,7 @@ import Login from "@/pages/Login";
 import Settings from "@/pages/Settings";
 import AcceptInvitation from "@/pages/AcceptInvitation";
 import Tablet from "@/pages/Tablet";
+import Plant from "@/pages/Plant";
 
 export default function App() {
   const [location] = useLocation();
@@ -44,6 +45,7 @@ export default function App() {
         <Switch>
           <Route path="/" component={Home} />
           <Route path="/configuracoes" component={Settings} />
+          <Route path="/planta/:slug" component={Plant} />
           <Route path="/convite/:token" component={AcceptInvitation} />
           <Route>
             <div className="flex items-center justify-center h-full">

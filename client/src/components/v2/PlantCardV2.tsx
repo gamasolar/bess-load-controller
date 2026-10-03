@@ -248,6 +248,7 @@ export function PlantCardV2({ slug, hideExpandButton = false }: { slug: string; 
         <div className="flex items-start justify-between gap-4 flex-nowrap">
           <div className="min-w-0 flex-1">
             <h2 className="text-lg md:text-xl font-bold tracking-tight truncate leading-tight">{s.site.name}</h2>
+            <a href={`/planta/${s.site.slug}`} className="text-[11px] text-amber-400 hover:text-amber-300 underline underline-offset-2">Ver planta completa</a>
             <p className="text-[11px] text-muted-foreground mt-1 flex items-center gap-2 whitespace-nowrap overflow-hidden">
               <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${s.site.fusionsolarConfigured ? "bg-emerald-500" : "bg-zinc-600"}`} />
               <span>FusionSolar {s.site.fusionsolarConfigured ? "OK" : "off"}</span>
