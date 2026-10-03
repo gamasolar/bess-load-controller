@@ -94,7 +94,7 @@ Sonoff `DVES_65A7F8` fechou a conexão às 23:54 e nunca mais tentou. Zero alarm
 |---|---|---|
 | Bomba ligou de fato (contato auxiliar) | entrada digital do Waveshare | ✅ é fio — funciona |
 | Estado do relé | Waveshare, Modbus TCP | ✅ |
-| SOC, PV, carga, bateria **em segundos, sem cota** | SmartLogger, Modbus TCP | ⚠️ depende de (1) `MGCC Mode = Disable` e (2) mapa de registradores (Apêndice A) |
+| SOC, PV, carga, bateria **em segundos, sem cota** | SmartLogger, Modbus TCP | ⚠️ depende só de `MGCC Mode = Disable`. O mapa de registradores chegou em 03/10 (Issue 47) e o leitor está pronto e testado — ver `docs/huawei/SMARTLOGGER-MODBUS.md` |
 | SOC etc. — **fallback** | FusionSolar, como hoje | ✅ funciona hoje (15 min, rate limit); continua existindo |
 | Estação solarimétrica | USB-RS485 no Pi | ✅ se sensores Modbus RTU; analógicos exigem módulo extra |
 | Potência real da bomba (kW) | — | ❌ não nesta configuração (Shelly Pro 3EM, opcional) |
@@ -234,7 +234,7 @@ Cada fase: 1 mudança, validada, antes da próxima. Reversão de C = religar o T
 1. **Antes de ir:** configurar MikroTik em bancada (WireGuard peer no gamaserver, DHCP, firewall via WG — usar `helios_mk_template_hardening`); rodar o teste de bancada da §4.4 (Waveshare + Pi + failover).
 2. **Energia:** 12/24 V DC a partir do nobreak para Waveshare e Pi; MikroTik por USB-C. Nada no circuito do inversor.
 3. **Rede:** Starlink → MikroTik WAN; SmartLogger, Waveshare, Pi nas 3 LAN.
-4. **SmartLogger:** ver Apêndice A.5 (MGCC primeiro; depois Modbus TCP com whitelist do Pi); testar leitura do Pi.
+4. **SmartLogger:** ver Apêndice A.5 (MGCC primeiro; depois Modbus TCP com whitelist do Pi); rodar a sonda e seguir o roteiro de validação de `docs/huawei/SMARTLOGGER-MODBUS.md` §10.
 5. **Quadro da bomba:** instalar **chave seccionadora/manual** acessível (lição de 17/09); relé 1 do Waveshare → bobina do contator que alimenta os inversores, **com supressor na bobina**; contato auxiliar → entrada 1 do Waveshare. Anotar marca/modelo dos inversores e como está o comando de partida (§3.6).
 6. **Validação no local:** ligar/desligar pela UI, confirmar retorno; cortar internet e confirmar que o Pi segue lendo SOC e atuando; parar o Pi e cronometrar o relé abrir.
 7. **Starlink:** app → Estatísticas → Quedas, registrar a causa das quedas de madrugada.
@@ -308,10 +308,28 @@ Ou seja:
 | **Disable** (provável — auto black start nunca funcionou) | como proposto: Modbus TCP via SmartLogger para o Pi. Trade-off: se um dia ligar MGCC para ter auto black start, perde o Modbus. |
 | **Enable** | sem Modbus TCP. Alternativas: (a) manter FusionSolar como fonte de SOC (rate limit continua) e cabear só o comando; (b) desligar MGCC e aceitar black start manual (já é o que acontece hoje). |
 
-### A.4 Lacuna que ficou
+### A.4 Lacuna fechada em 2026-10-03
 
-**Não consegui obter o mapa oficial de registradores do ESS C&I via SmartLogger** ("SmartLogger ModBus Interface Definitions" **Issue 43, 2023-10-21** ou posterior — as cópias públicas na Photomate/Zendesk e Scribd estão bloqueadas; as versões acessíveis, Issue 35/37 de 2020, antecedem o ESS C&I e não têm SOC). As definições de ESS que achei (LUNA2000B: SOC U16 % gain 1; carga/descarga I32 kW gain 1000; SOH; tensão/corrente de rack; status) são do **acesso direto ao ESS**, não via SmartLogger, e de outro modelo. **Pedir à Huawei Partners / ao instalador o PDF "SmartLogger ModBus Interface Definitions" mais recente** — é o item 1 da visita técnica, junto com habilitar o Modbus TCP e anotar o `logical address` do ESS.
+O operador obteve o **"SmartLogger V300R024C00SPC100 ModBus Interface Definitions", Issue 47 (2024-09-19)**, e a Issue 43. Li a Issue 47 inteira; o resumo de trabalho está em `docs/huawei/SMARTLOGGER-MODBUS.md` e o mapa, tipado, em `server/smartlogger-map.ts`.
+
+Registradores do controle, todos no Unit ID 0: SOC `40515` (U16, ÷10, resolução 0,1 %), potência do ESS `40392` e `40507` (I32, ÷1000 kW), geração `40388`, potência total `40525` (a carga, em planta ilhada), capacidade ainda descarregável `40482`, SOC de fim de descarga `40217`, PCS em operação `40207`.
+
+Pronto e testado contra um SmartLogger simulado (57 testes): cliente Modbus TCP **só de leitura** (`server/modbus-tcp.ts`), leitura em blocos com queda para registrador individual, decodificação de alarmes, descoberta de Unit IDs e calibração automática do sinal da potência. **Nada disso está ligado ao servidor em produção**; entra na Fase A, com autorização do operador.
+
+Diferença de versão: o documento é da `V300R024C00SPC100`; o instalado é `V300R024C10SPC211`. A validação é o roteiro da sonda.
+
+**O que continua faltando**, sem bloquear o controle: o mapa interno da bateria ("LUNA2000B ESS Modbus Port Definitions" para `V200R024C00SPC410`), para temperatura por rack e alarmes do BMS.
 
 ### A.5 O que isso muda no roteiro da visita (§6, passo 4)
 
 4. **SmartLogger:** (a) ler `Settings > Microgrid > MGCC Mode` e **anotar**; (b) se Disable, habilitar `Settings > Comm. Param. > Modbus TCP` com `Enable(Limited)` + IP do Pi na whitelist + `Logical address`; (c) ler o endereço lógico do ESS em `Monitoring`; (d) testar do Pi: ler SOC e comparar com o WebUI; (e) **não** mexer em MGCC sem decisão registrada — liga auto black start e derruba o Modbus.
+
+### A.6 O que a Issue 47 acrescenta ao plano
+
+1. **Black start comandado por terceiros.** O mapa tem `44360` (black start), `44361` (estado) e `44362` (black start em um clique, Issue 45). Isso suaviza a escolha do A.3: com o MGCC desligado perde-se o black start *automático*, mas pode existir o black start *remoto, disparado pelo operador*. Não validado no LUNA2000-215-2S10, é uma escrita e energiza a planta com a bomba partindo junto. Fica como item de investigação na visita, só lendo `44361` e os alarmes 1140/1147 antes e depois de um black start pelo botão físico.
+2. **Armadilha a conferir na visita:** `41947` (desligar o array ao perder a comunicação com o mestre). Se estiver ligado, uma queda do Pi apaga a planta. Tem que estar em `0`.
+3. **Causa do Auto Black Start nunca ter funcionado** (CLAUDE.md §7.6): os alarmes `1140/4` "o ESS não suporta black start" e `1147` "SOC abaixo do mínimo" dão a resposta por leitura.
+4. **Estação solarimétrica pelo próprio SmartLogger:** ligada à porta COM dele, os dados saem pelo mesmo Modbus (`40031`–`40046`). Dispensa o adaptador USB-RS485 no Pi.
+5. **Unit IDs sem depender da WebUI:** a sonda varre os registradores públicos (`65534`, `65510`) e casa pelo número de série.
+6. **Sinal:** Huawei usa positivo = descarga; o banco do dashboard usa positivo = carga. Calibrar com `--watch` antes de gravar.
+
