@@ -11,6 +11,8 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { startAdaptivePolling } from "../poll-scheduler";
 import { startPumpDailyJob } from "../pump-daily-job";
+import { setRawKpiListener } from "../fusionsolar";
+import { captureFusionSolarKpi, isTelemetryCaptureEnabled } from "../telemetry-capture";
 
 function getStorageRoot(): string {
   const override = process.env.STORAGE_DIR;
@@ -92,6 +94,13 @@ async function startServer() {
       startAutoFetch();
     }
     // MQTT polling + DB sync runs in both modes (state observation only)
+    // Telemetria completa: grava o pacote bruto que a FusionSolar já entrega.
+    // Sem consultas a mais; não participa do controle. TELEMETRY_CAPTURE=off desliga.
+    if (isTelemetryCaptureEnabled()) {
+      setRawKpiListener((devTypeId, items) => { void captureFusionSolarKpi(devTypeId, items); });
+      console.log("[Boot] Telemetria completa ATIVA (captura do pacote bruto da FusionSolar)");
+    }
+
     startMqttStateSync();
     // Snapshot diário da operação da bomba (recovery + cron horário)
     startPumpDailyJob();

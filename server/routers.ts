@@ -47,6 +47,7 @@ import { generateSiteReport, generateAllReports, generateAndNotify, getScheduler
 // Re-exported for backwards compat (mqtt-dispatch.test.ts imports from "./routers")
 export { sendMqttCommand } from "./mqtt-dispatch";
 import { sendMqttCommand } from "./mqtt-dispatch";
+import { telemetryRouter } from "./telemetry-api";
 import {
   decideAutomacaoAlarm, decideBrokerAlarm,
   describeAutomacaoOffline, describeBrokerOffline,
@@ -2005,6 +2006,9 @@ export const appRouter = router({
         return getSchedulerSettings();
       }),
   }),
+
+  // Telemetria completa por equipamento (somente leitura).
+  telemetry: telemetryRouter,
 });
 
 export type AppRouter = typeof appRouter;

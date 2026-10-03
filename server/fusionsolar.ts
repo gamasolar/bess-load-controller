@@ -203,6 +203,27 @@ async function closeRateLimitAlarms(siteId?: number): Promise<void> {
   await closeAlarmsByType("RATE_LIMIT_FUSIONSOLAR", siteId);
 }
 
+// ─── Telemetria completa: aviso do pacote bruto ─────────────
+// O cliente só AVISA que chegou um pacote do getDevRealKpi; quem escuta
+// (server/telemetry-capture.ts) grava todos os campos por equipamento.
+// Nenhuma consulta a mais é feita. O aviso é isolado por try/catch e nunca
+// espera resposta: telemetria não pode atrasar nem quebrar o ciclo de controle.
+type RawKpiListener = (devTypeId: number, items: unknown[]) => void;
+let rawKpiListener: RawKpiListener | null = null;
+
+export function setRawKpiListener(listener: RawKpiListener | null): void {
+  rawKpiListener = listener;
+}
+
+function emitRawKpi(devTypeId: number, items: unknown[]): void {
+  if (!rawKpiListener) return;
+  try {
+    rawKpiListener(devTypeId, items);
+  } catch {
+    /* telemetria nunca afeta o controle */
+  }
+}
+
 // ─── FusionSolar Client ─────────────────────────────────────
 
 class FusionSolarClient {
@@ -388,6 +409,7 @@ class FusionSolarClient {
     try {
       const data = await this.apiPost("getDevRealKpi", { devIds, devTypeId }, siteId);
       if (!data || !Array.isArray(data) || data.length === 0) return null;
+      emitRawKpi(devTypeId, data);
 
       // Agrega N baterias do site (Piscinão tem 2; Barragem tem 1).
       // Power: SOMA. SOC/SOH/temperatura/voltagem: MÉDIA. max_*_power: SOMA.
@@ -444,6 +466,7 @@ class FusionSolarClient {
     try {
       const data = await this.apiPost("getDevRealKpi", { devIds, devTypeId });
       if (!data || !Array.isArray(data) || data.length === 0) return null;
+      emitRawKpi(devTypeId, data);
 
       // Sum active_power across all inverters
       let totalActivePower = 0;

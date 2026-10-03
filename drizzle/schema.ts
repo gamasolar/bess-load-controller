@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, float, boolean, json } from "drizzle-orm/mysql-core";
+import { int, bigint, mysqlEnum, mysqlTable, text, timestamp, varchar, float, boolean, json, uniqueIndex, index } from "drizzle-orm/mysql-core";
 
 // ─── Users ───────────────────────────────────────────────────
 // `openId` is kept as the primary user identifier (unique key) for backwards
@@ -280,3 +280,52 @@ export const bessSettings = mysqlTable("bess_settings", {
 });
 export type BessSetting = typeof bessSettings.$inferSelect;
 export type InsertBessSetting = typeof bessSettings.$inferInsert;
+
+
+// ─── Telemetria completa por equipamento ────────────────────
+// Camada SEPARADA do controle da bomba (bess_state / bess_readings seguem
+// sendo a fonte do control-engine). Aqui entra tudo o que cada equipamento
+// reporta, de qualquer fonte, sem descartar campos. Ver docs/TELEMETRIA.md.
+export const telemetryDevices = mysqlTable("telemetry_devices", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  // De onde vêm os dados: nuvem Huawei (Northbound) ou Modbus TCP local.
+  source: mysqlEnum("source", ["fusionsolar", "modbus"]).notNull(),
+  // Identificador na fonte: devId longo da FusionSolar, ou "unit:<n>" no Modbus.
+  externalId: varchar("externalId", { length: 64 }).notNull(),
+  // inverter | ess | plant | emi | meter | relay | other
+  kind: varchar("kind", { length: 24 }).notNull(),
+  devTypeId: int("devTypeId"),
+  name: varchar("name", { length: 128 }),
+  model: varchar("model", { length: 64 }),
+  serial: varchar("serial", { length: 64 }),
+  firmware: varchar("firmware", { length: 64 }),
+  meta: json("meta"),
+  firstSeenAt: timestamp("firstSeenAt").defaultNow().notNull(),
+  lastSeenAt: timestamp("lastSeenAt"),
+  // Instante (do equipamento) da amostra mais recente gravada.
+  lastSampleAt: timestamp("lastSampleAt"),
+}, (t) => ({
+  sourceExternal: uniqueIndex("telemetry_devices_source_external").on(t.source, t.externalId),
+  bySite: index("telemetry_devices_site").on(t.siteId),
+}));
+
+export type TelemetryDevice = typeof telemetryDevices.$inferSelect;
+export type InsertTelemetryDevice = typeof telemetryDevices.$inferInsert;
+
+export const telemetrySamples = mysqlTable("telemetry_samples", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  deviceId: int("deviceId").notNull(),
+  // Instante da medição segundo a fonte (collectTime da Huawei / relógio do coletor).
+  collectedAt: timestamp("collectedAt").notNull(),
+  receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+  // Pacote BRUTO, como veio da fonte. Nada é descartado nem renomeado aqui;
+  // nome, unidade e grupo de cada campo vêm do catálogo na hora de exibir.
+  data: json("data").notNull(),
+}, (t) => ({
+  // A Huawei repete o mesmo collectTime em consultas seguidas: a chave única evita duplicata.
+  deviceTime: uniqueIndex("telemetry_samples_device_time").on(t.deviceId, t.collectedAt),
+}));
+
+export type TelemetrySample = typeof telemetrySamples.$inferSelect;
+export type InsertTelemetrySample = typeof telemetrySamples.$inferInsert;
