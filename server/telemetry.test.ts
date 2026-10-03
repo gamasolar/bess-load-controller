@@ -280,3 +280,22 @@ describe("mapa do SUN2000", () => {
     expect(describeSun2000Status(null)).toBeNull();
   });
 });
+
+describe("estimateCycles", () => {
+  it("divide a energia descarregada pela capacidade útil da planta", async () => {
+    const { estimateCycles } = await import("./telemetry-api");
+    const e = estimateCycles({ since: new Date("2026-04-25T00:00:00Z"), until: new Date("2026-05-05T00:00:00Z"), dischargedKwh: 2000, chargedKwh: 2200, gapHours: 3, batteries: 2 });
+    expect(e.usableKwh).toBe(400);
+    expect(e.cycles).toBe(5);
+    expect(e.days).toBe(10);
+    expect(e.cyclesPerDay).toBe(0.5);
+    expect(e.warrantyCycles).toBe(7300);
+  });
+
+  it("sem histórico não inventa ritmo", async () => {
+    const { estimateCycles } = await import("./telemetry-api");
+    const e = estimateCycles({ since: null, until: new Date(), dischargedKwh: 0, chargedKwh: 0, gapHours: 0, batteries: 1 });
+    expect(e.cycles).toBe(0);
+    expect(e.cyclesPerDay).toBe(0);
+  });
+});

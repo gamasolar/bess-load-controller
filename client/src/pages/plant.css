@@ -471,3 +471,127 @@
 .plant-alarms li p { margin: 0; max-width: 72ch; }
 .plant-alarms li span { font-size: 0.875rem; color: var(--pl-mist); }
 .plant-alarms li[data-severity="CRITICAL"] span { color: var(--pl-clay); }
+
+/* ── Todas as leituras: um equipamento e um grupo por vez ──────── */
+.all-tabs { display: flex; gap: 1.25rem; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--pl-shore); margin-bottom: 1rem; }
+.all-tabs button { font: inherit; font-size: 0.9375rem; color: var(--pl-mist); background: none; border: 0; border-bottom: 2px solid transparent; padding: 0.5rem 0; white-space: nowrap; cursor: pointer; }
+.all-tabs button[aria-selected="true"] { color: var(--pl-sky); border-bottom-color: var(--pl-sun); }
+.all-tabs small { color: var(--pl-mist); font-size: 0.75rem; }
+.all-list { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0 2.5rem; }
+.all-list > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; border-bottom: 1px solid rgb(31 82 98 / 0.4); font-size: 0.9375rem; }
+.all-list dt { color: var(--pl-mist); }
+.all-list dd { margin: 0; text-align: right; white-space: nowrap; }
+.all-strings { display: grid; grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr)); gap: 0 2rem; }
+.all-strings > div { display: grid; grid-template-columns: 2.6rem 1fr 1fr; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid rgb(31 82 98 / 0.4); font-size: 0.9375rem; }
+.all-strings span:first-child { color: var(--pl-mist); }
+.all-strings span:not(:first-child) { text-align: right; }
+@media (max-width: 760px) {
+  .all-strings { grid-template-columns: 1fr 1fr; gap: 0 1.25rem; }
+  .all-strings > div { font-size: 0.875rem; gap: 0.25rem; }
+}
+
+.plant-tip-row { display: flex; align-items: center; gap: 0.5rem; }
+.plant-tip-row i { width: 0.7rem; height: 0.7rem; border-radius: 50%; flex: none; }
+.plant-tip-row b { margin-left: auto; padding-left: 1.25rem; font-weight: 600; }
+
+/* ── Ficha do equipamento: todos os grupos numa vista só ───────── */
+.sheet { columns: 3 19rem; column-gap: 2.75rem; }
+.sheet details { break-inside: avoid; margin-bottom: 1.25rem; border: 0; }
+.sheet summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0 0 0.35rem;
+  font-family: var(--pl-display);
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--pl-sun);
+  border-bottom: 1px solid var(--pl-shore);
+}
+.sheet summary::-webkit-details-marker { display: none; }
+.sheet summary small { font-family: var(--pl-text); font-weight: 400; font-size: 0.75rem; color: var(--pl-mist); margin-left: auto; }
+.sheet details:not([open]) summary small::after { content: " (abrir)"; }
+.sheet dl { margin: 0; }
+.sheet dl > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.24rem 0; border-bottom: 1px solid rgb(31 82 98 / 0.35); font-size: 0.875rem; }
+.sheet dt { color: var(--pl-mist); }
+.sheet dd { margin: 0; text-align: right; white-space: nowrap; }
+.sheet-strings { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
+.sheet-strings > div { display: grid; grid-template-columns: 2.5rem 1fr 1fr; gap: 0.25rem; padding: 0.24rem 0; border-bottom: 1px solid rgb(31 82 98 / 0.35); font-size: 0.875rem; }
+.sheet-strings span:first-child { color: var(--pl-mist); }
+.sheet-strings span:not(:first-child) { text-align: right; }
+
+.sheet-phases > div { display: grid; grid-template-columns: 3rem 1fr 1fr 1fr; gap: 0.5rem; padding: 0.24rem 0; border-bottom: 1px solid rgb(31 82 98 / 0.35); font-size: 0.875rem; }
+.sheet-phases span:not(:first-child) { text-align: right; }
+.sheet-phases > div:first-child, .sheet-phases span:first-child { color: var(--pl-mist); }
+
+/* ── Ciclos da bateria ─────────────────────────────────────────── */
+.cycles { margin-top: 2rem; max-width: 46rem; }
+.cycles h3 { font-size: 1rem; font-weight: 500; margin: 0 0 0.25rem; }
+.cycles-figure { font-family: var(--pl-display); font-weight: 700; font-size: 1.75rem; line-height: 1.15; margin: 0 0 0.6rem; }
+.cycles-figure small { font-family: var(--pl-text); font-weight: 400; font-size: 0.9375rem; color: var(--pl-mist); }
+.cycles-bar { height: 0.5rem; border-radius: 0.25rem; background: rgb(31 82 98 / 0.4); overflow: hidden; margin-bottom: 0.6rem; }
+.cycles-bar i { display: block; height: 100%; width: var(--w, 0%); background: var(--pl-tide); border-radius: 0.25rem; }
+
+.cycles-how summary { cursor: pointer; font-size: 0.875rem; color: var(--pl-mist); }
+.cycles-how p { margin: 0.4rem 0 0; }
+.cycles { margin-top: 1.5rem; }
+.cycles-figure { font-size: 1.5rem; }
+
+/* ── Cena ilustrada da planta ──────────────────────────────────── */
+.scene {
+  position: relative;
+  margin-top: 0.75rem;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  --sc-sky-top: #06161d; --sc-sky-mid: #081d25; --sc-sky-low: #123e4a;
+  --sc-hill-far: #0b2a33; --sc-hill-near: #0f3a3f; --sc-tree: #082229;
+  --sc-earth: #3a1c14; --sc-earth-edge: #6b3220;
+  --sc-water-top: #1c6672; --sc-water-low: #0b2f3a;
+  --sc-panel: #12303c; --sc-panel-edge: #2c6577;
+  --sc-box: #0e3340; --sc-box-edge: #3f8395; --sc-roof: #6b3220; --sc-cable: rgb(228 240 241 / 0.14);
+}
+.scene[data-day="true"] {
+  --sc-sky-top: #1b5c6c; --sc-sky-mid: #2a6f7c; --sc-sky-low: #8cc9c4;
+  --sc-hill-far: #2f7a72; --sc-hill-near: #256257; --sc-tree: #174a44;
+  --sc-earth: #9a4526; --sc-earth-edge: #d4603a;
+  --sc-water-top: #3fa7ad; --sc-water-low: #14535f;
+  --sc-panel: #15404f; --sc-panel-edge: #3f8395;
+  --sc-box: #0e3340; --sc-box-edge: #cfe6e6; --sc-roof: #d4603a; --sc-cable: rgb(7 31 39 / 0.3);
+}
+.scene svg { display: block; width: 100%; height: auto; }
+.scene-soc { font-family: var(--pl-display); font-weight: 700; font-size: 34px; fill: #e4f0f1; }
+.scene-level { transition: height 1.2s ease, y 1.2s ease; }
+.scene-flow { stroke-dasharray: 2 16; stroke-width: 6; animation: scene-run 1s linear infinite; }
+@keyframes scene-run { from { stroke-dashoffset: 18; } to { stroke-dashoffset: 0; } }
+.scene-pulse { animation: scene-pulse 4s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
+@keyframes scene-pulse { from { transform: scale(0.9); } to { transform: scale(1.1); } }
+.scene-ripple { animation: scene-ripple 2.4s ease-in-out infinite alternate; }
+@keyframes scene-ripple { from { transform: translateX(-6px); } to { transform: translateX(6px); } }
+.scene-spin { animation: scene-spin 1.4s linear infinite; }
+@keyframes scene-spin { to { transform: rotate(360deg); } }
+.scene-blink { animation: scene-blink 2s ease-in-out infinite; }
+@keyframes scene-blink { 50% { opacity: 0.35; } }
+
+.scene-tag { position: absolute; color: #e4f0f1; text-shadow: 0 1px 8px rgb(7 31 39 / 0.8); line-height: 1.15; }
+.scene-tag span { display: block; font-size: 0.875rem; opacity: 0.85; }
+.scene-tag strong { font-family: var(--pl-display); font-weight: 700; font-size: clamp(1.4rem, 3.4vw, 2.6rem); letter-spacing: -0.02em; }
+.scene-tag strong small { font-family: var(--pl-text); font-size: 0.45em; font-weight: 400; margin-left: 0.25rem; opacity: 0.85; }
+.scene-tag em { display: block; font-style: normal; font-size: 0.8125rem; opacity: 0.85; }
+.scene-tag--sun { left: 4%; top: 30%; }
+.scene-tag--sun strong { color: var(--pl-sun); }
+.scene-tag--load { right: 3%; top: 34%; text-align: right; }
+.scene-tag--bat { left: 0; right: 0; bottom: 1.5%; display: flex; justify-content: center; gap: 1.5rem; font-size: 0.8125rem; text-shadow: none; }
+.scene-tag--bat p { margin: 0; background: rgb(7 31 39 / 0.72); padding: 0.15rem 0.6rem; border-radius: 999px; }
+.scene-tag--bat span { display: inline; font-weight: 600; opacity: 1; font-size: inherit; }
+@media (max-width: 760px) {
+  .scene-tag span, .scene-tag em { font-size: 0.6875rem; }
+  .scene-tag--sun { top: 22%; }
+  .scene-tag--load { top: 22%; }
+  .scene-tag--bat { position: static; flex-direction: column; gap: 0.25rem; align-items: flex-start; padding: 0.6rem 0.75rem; background: var(--pl-water); font-size: 0.8125rem; }
+  .scene-tag--bat p { background: none; padding: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scene-flow, .scene-pulse, .scene-ripple, .scene-spin, .scene-blink { animation: none; }
+}
