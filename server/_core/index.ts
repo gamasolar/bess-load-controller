@@ -11,8 +11,12 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { startAdaptivePolling } from "../poll-scheduler";
 import { startPumpDailyJob } from "../pump-daily-job";
-import { setRawKpiListener } from "../fusionsolar";
+import { getFusionSolarClient, isFusionSolarConfigured, setRawKpiListener } from "../fusionsolar";
 import { captureFusionSolarKpi, isTelemetryCaptureEnabled } from "../telemetry-capture";
+import { HUAWEI_ALARM_FIRST_DELAY_MS, HUAWEI_ALARM_INTERVAL_MS, isHuaweiAlarmPollingEnabled, sweepHuaweiAlarms } from "../huawei-alarms";
+import { closeAlarmsByType, getActiveAlarms, getAllSites, openAlarmIfMissing } from "../db";
+import { getSiteRuntimeState } from "../control-engine";
+import { notifyOwner } from "./notification";
 
 function getStorageRoot(): string {
   const override = process.env.STORAGE_DIR;
@@ -101,6 +105,37 @@ async function startServer() {
       console.log("[Boot] Telemetria completa ATIVA (captura do pacote bruto da FusionSolar)");
     }
 
+    if (isHuaweiAlarmPollingEnabled() && isFusionSolarConfigured()) {
+      const yields = { count: 0 };
+      const run = async () => {
+        try {
+          const r = await sweepHuaweiAlarms({
+            yields,
+            listSites: async () => (await getAllSites())
+              .filter((x) => !!x.fusionsolarPlantCode)
+              .map((x) => ({ id: x.id, name: x.name, plantCode: x.fusionsolarPlantCode as string })),
+            anySiteCritical: async () => {
+              for (const x of await getAllSites()) {
+                if ((await getSiteRuntimeState(x.slug))?.inCriticalZone) return true;
+              }
+              return false;
+            },
+            fetchAlarms: (codes, begin, end) => getFusionSolarClient().getAlarmListOrNull(codes, begin, end),
+            listOpen: async () => (await getActiveAlarms()).map((a) => ({ siteId: a.siteId, type: a.type })),
+            open: (a) => openAlarmIfMissing(a.siteId, a.severity, a.type, a.description),
+            close: (a) => closeAlarmsByType(a.type, a.siteId),
+            notify: async (siteName, message) => {
+              try { await notifyOwner({ title: `⚠️ ALARME CRÍTICO — ${siteName}`, content: message }); } catch { /* canal de saída é opcional */ }
+            },
+          });
+          console.log("[HuaweiAlarms]", JSON.stringify(r));
+        } catch (e) {
+          console.warn("[HuaweiAlarms] erro:", e instanceof Error ? e.message : e);
+        }
+      };
+      setTimeout(() => { void run(); setInterval(() => void run(), HUAWEI_ALARM_INTERVAL_MS); }, HUAWEI_ALARM_FIRST_DELAY_MS);
+      console.log("[Boot] Alarmes do fabricante: consulta a cada 30 min (primeira em 5 min)");
+    }
     startMqttStateSync();
     // Snapshot diário da operação da bomba (recovery + cron horário)
     startPumpDailyJob();

@@ -599,6 +599,21 @@ class FusionSolarClient {
     }
   }
 
+  /**
+   * Como `getAlarmList`, mas devolve `null` quando a chamada falha, para quem
+   * precisa distinguir "sem alarmes" de "não consegui consultar".
+   */
+  async getAlarmListOrNull(stationCodes: string, beginTime: number, endTime: number): Promise<FusionSolarAlarm[] | null> {
+    try {
+      const data = await this.apiPost("getAlarmList", { stationCodes, beginTime, endTime, language: "pt_BR" });
+      if (Array.isArray(data)) return data;
+      return Array.isArray(data?.list) ? data.list : [];
+    } catch (error) {
+      console.warn("[FusionSolar] getAlarmList falhou:", error instanceof Error ? error.message : error);
+      return null;
+    }
+  }
+
   // ── Combined Telemetry (for the controller loop) ────────
   // OPTIMIZED: Serialized calls instead of Promise.all to respect 1 concurrent req/min
   // OPTIMIZED: Skip getStationRealKpi when we have device-level battery data (redundant)

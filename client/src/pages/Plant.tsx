@@ -388,6 +388,9 @@ export default function Plant() {
   const [tab, setTab] = useState<TabId>("agora");
   const [inverterId, setInverterId] = useState<number | null>(null);
 
+  const alarmsQuery = trpc.bess.alarms.useQuery({ slug }, { enabled: !!slug, refetchInterval: 60_000 });
+  const alarms = (alarmsQuery.data ?? []).filter((a) => a.active);
+
   const devices = telemetry.data?.devices ?? [];
   const batteries = devices.filter((d) => d.kind === "ess");
   const inverters = devices.filter((d) => d.kind === "inverter");
@@ -481,6 +484,23 @@ export default function Plant() {
       </div>
 
       <div className="plant-body">
+        {tab === "agora" && alarms.length > 0 && (
+          <section className="plant-alarms" aria-label="Alarmes ativos">
+            <h2>{alarms.length === 1 ? "1 alarme ativo" : `${alarms.length} alarmes ativos`}</h2>
+            <ul>
+              {alarms.map((a) => (
+                <li key={a.id} data-severity={a.severity}>
+                  <p>{a.description}</p>
+                  <span>
+                    {a.severity === "CRITICAL" ? "Crítico" : a.severity === "WARNING" ? "Importante" : "Aviso"}, aberto{" "}
+                    {ago(Math.round((Date.now() - new Date(a.openedAt).getTime()) / 1000))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {tab === "agora" && (
         <section className="plant-section" aria-labelledby="pl-now">
           <h2 id="pl-now">Energia agora</h2>
