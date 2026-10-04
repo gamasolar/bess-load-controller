@@ -109,3 +109,42 @@
 .scada .plant--embed .plant-tip { background: #0d2635; border-color: #294657; }
 .scada .plant--embed .plant-note { color: #a8c2d5; }
 .scada .sc-sub { font-size: 16px; font-weight: 600; margin: 22px 0 0; color: #f3f7fa; }
+
+/* ── Tela inteira, sem tarjas: o quadro acompanha a proporção da janela ── */
+.scada:not(.mobile-layout) .scada-dash {
+  background-size: 100% 100%, calc(1672px * var(--k, 1)) calc(941px * var(--k, 1));
+  background-position: center, center;
+  background-repeat: no-repeat;
+}
+.scada:not(.mobile-layout) .scada-dash[data-plant="piscinao"] {
+  background-size: 100% 100%, calc(1672px * var(--k, 1)) calc(941px * var(--k, 1));
+  background-position: center, center calc(50% - 32px * var(--k, 1));
+}
+/* a cena (rotas, etiquetas, torre) cresce junto com a imagem de fundo */
+.scada:not(.mobile-layout) .scene-stage,
+.scada:not(.mobile-layout) .equipment-readouts {
+  display: block;
+  position: absolute;
+  left: calc(50% - 836px);
+  top: calc(50% - 470.5px);
+  width: 1672px;
+  height: 941px;
+  transform: scale(var(--k, 1));
+  transform-origin: center;
+  pointer-events: none;
+}
+.scada:not(.mobile-layout) .equipment-readouts > * { pointer-events: auto; }
+/* painéis: presos às bordas, não à cena */
+.scada:not(.mobile-layout) .metrics { top: calc(655px + var(--dy, 0px)); }
+.scada:not(.mobile-layout) footer { top: calc(860px + var(--dy, 0px)); }
+.scada:not(.mobile-layout) .flow-controls { top: calc(552px + var(--dy, 0px)); }
+.scada:not(.mobile-layout) .alarm-area { top: calc(264px + var(--dy, 0px)); }
+.scada:not(.mobile-layout) .bottom-node { top: calc(574px + var(--dy, 0px)); }
+.scada:not(.mobile-layout) .bottom-node.grid { left: calc(50% - 186px); }
+.scada:not(.mobile-layout) .bottom-node.logger { left: calc(50% + 139px); }
+.scada header .topcard.weather { margin-left: auto; }
+.scada .sc-gear { padding: 8px 12px; }
+@media (max-width: 899px) {
+  .scada header > .sc-gear { display: flex; height: 27px; min-height: 27px; padding: 3px 8px; border: 0; }
+  .scada .equipment-readouts .water-control { grid-column: 1 / -1; }
+}

@@ -1388,13 +1388,26 @@ export const appRouter = router({
 
     // List actions log (audit) for a site
     getActions: publicProcedure
-      .input(z.object({ slug: z.string(), limit: z.number().min(1).max(200).default(50) }))
+      .input(z.object({
+        slug: z.string(),
+        limit: z.number().min(1).max(1000).default(50),
+        /** Período (ms epoch). Sem eles, vale só o limite: as mais recentes. */
+        from: z.number().optional(),
+        to: z.number().optional(),
+        sources: z.array(z.enum(["AUTO", "MANUAL", "BLACKOUT", "SYSTEM"])).optional(),
+        actions: z.array(z.enum(["TURN_ON", "TURN_OFF", "MODE_CHANGE", "CONFIG_CHANGE", "ALERT"])).optional(),
+      }))
       .query(async ({ input }) => {
         await ensureSeeded();
         const site = await getSiteBySlug(input.slug);
         if (!site) return [];
         const db = await getDb();
         if (!db) return [];
+        const where = [eq(bessActions.siteId, site.id)];
+        if (input.from != null) where.push(gte(bessActions.timestamp, new Date(input.from)));
+        if (input.to != null) where.push(lt(bessActions.timestamp, new Date(input.to)));
+        if (input.sources?.length) where.push(inArray(bessActions.source, input.sources));
+        if (input.actions?.length) where.push(inArray(bessActions.action, input.actions));
         // LEFT JOIN com users pra trazer nome/email de quem fez cada ação manual.
         // Importação dinâmica evita ciclo com schema (já está na escopo do file).
         const { users } = await import("../drizzle/schema");
@@ -1417,7 +1430,7 @@ export const appRouter = router({
           })
           .from(bessActions)
           .leftJoin(users, eq(bessActions.userId, users.id))
-          .where(eq(bessActions.siteId, site.id))
+          .where(and(...where))
           .orderBy(desc(bessActions.timestamp))
           .limit(input.limit);
         return rows;

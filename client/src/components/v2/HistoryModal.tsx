@@ -1,7 +1,10 @@
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 
 const sourceColor: Record<string, string> = {
@@ -24,6 +27,32 @@ function formatTs(t: Date | string | null | undefined): string {
   return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "medium" });
 }
 
+const PERIODS = [
+  { id: "24h", label: "24 horas", ms: 24 * 3600_000 },
+  { id: "7d", label: "7 dias", ms: 7 * 24 * 3600_000 },
+  { id: "30d", label: "30 dias", ms: 30 * 24 * 3600_000 },
+  { id: "12m", label: "12 meses", ms: 365 * 24 * 3600_000 },
+  { id: "all", label: "Tudo", ms: null },
+  { id: "custom", label: "Datas", ms: null },
+] as const;
+type PeriodId = (typeof PERIODS)[number]["id"];
+
+const KINDS = [
+  { id: "all", label: "Todas as ações", sources: undefined, actions: undefined },
+  { id: "manual", label: "Comandos de pessoas", sources: ["MANUAL"] as const, actions: undefined },
+  { id: "pump", label: "Liga e desliga", sources: undefined, actions: ["TURN_ON", "TURN_OFF"] as const },
+  { id: "setup", label: "Modo e configuração", sources: undefined, actions: ["MODE_CHANGE", "CONFIG_CHANGE"] as const },
+  { id: "blackout", label: "Blackout", sources: ["BLACKOUT"] as const, actions: undefined },
+] as const;
+type KindId = (typeof KINDS)[number]["id"];
+
+const PAGE = 200;
+const MAX = 1000;
+
+function dayStart(v: string): number | undefined {
+  return v ? new Date(`${v}T00:00:00`).getTime() : undefined;
+}
+
 export function HistoryModal({
   open, onOpenChange, slug, siteName,
 }: {
@@ -32,23 +61,73 @@ export function HistoryModal({
   slug: string;
   siteName: string;
 }) {
-  const { data, isLoading } = trpc.bess.getActions.useQuery(
-    { slug, limit: 50 },
-    { enabled: open, refetchInterval: open ? 10_000 : false },
+  const [period, setPeriod] = useState<PeriodId>("7d");
+  const [kind, setKind] = useState<KindId>("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [limit, setLimit] = useState(PAGE);
+  // "agora" fixo enquanto o modal está aberto, para a consulta não mudar a cada render
+  const [anchor, setAnchor] = useState(() => Date.now());
+  useEffect(() => { if (open) { setAnchor(Date.now()); setLimit(PAGE); } }, [open, period, kind, dateFrom, dateTo]);
+
+  const range = useMemo(() => {
+    if (period === "custom") {
+      const to = dayStart(dateTo);
+      return { from: dayStart(dateFrom), to: to != null ? to + 24 * 3600_000 : undefined };
+    }
+    const ms = PERIODS.find((p) => p.id === period)?.ms;
+    return { from: ms ? anchor - ms : undefined, to: undefined };
+  }, [period, dateFrom, dateTo, anchor]);
+  const k = KINDS.find((x) => x.id === kind)!;
+
+  const { data, isLoading, isFetching } = trpc.bess.getActions.useQuery(
+    {
+      slug, limit, from: range.from, to: range.to,
+      sources: k.sources ? [...k.sources] : undefined,
+      actions: k.actions ? [...k.actions] : undefined,
+    },
+    { enabled: open, refetchInterval: open && period === "24h" ? 30_000 : false, placeholderData: (prev) => prev },
   );
+  const count = data?.length ?? 0;
+  const truncated = count >= limit;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Histórico — {siteName}</DialogTitle>
-          <DialogDescription>Últimas 50 ações registradas em bess_actions.</DialogDescription>
+          <DialogTitle>Histórico de ações — {siteName}</DialogTitle>
+          <DialogDescription>Comandos, mudanças de modo e de configuração registrados para esta planta.</DialogDescription>
         </DialogHeader>
+
         <div className="space-y-2">
-          {isLoading && <p className="text-sm text-muted-foreground">Carregando…</p>}
-          {!isLoading && (data?.length ?? 0) === 0 && (
-            <p className="text-sm text-muted-foreground">Nenhuma ação registrada ainda.</p>
+          <div className="flex flex-wrap gap-1.5">
+            {PERIODS.map((p) => (
+              <Button key={p.id} size="sm" variant={period === p.id ? "default" : "outline"} onClick={() => setPeriod(p.id)}>{p.label}</Button>
+            ))}
+          </div>
+          {period === "custom" && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label htmlFor="hist-de">De</label>
+              <Input id="hist-de" type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} className="w-auto" />
+              <label htmlFor="hist-ate">até</label>
+              <Input id="hist-ate" type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} className="w-auto" />
+            </div>
           )}
+          <div className="flex flex-wrap gap-1.5">
+            {KINDS.map((x) => (
+              <Button key={x.id} size="sm" variant={kind === x.id ? "secondary" : "ghost"} onClick={() => setKind(x.id)}>{x.label}</Button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {isLoading ? "Carregando…"
+              : count === 0 ? "Nenhuma ação neste período."
+              : truncated ? `Mostrando as ${count} mais recentes do período; há mais.`
+              : `${count} ${count === 1 ? "ação" : "ações"} no período.`}
+            {isFetching && !isLoading ? " Atualizando…" : ""}
+          </p>
+        </div>
+
+        <div className="space-y-2">
           {data?.map((a: any) => (
             <div key={a.id} className="flex items-start gap-3 border border-white/5 rounded-md p-3 text-sm">
               <div className="font-mono text-xs text-muted-foreground w-32 shrink-0">{formatTs(a.timestamp)}</div>
@@ -75,6 +154,12 @@ export function HistoryModal({
               </div>
             </div>
           ))}
+          {truncated && limit < MAX && (
+            <Button variant="outline" className="w-full" onClick={() => setLimit(Math.min(MAX, limit + PAGE))}>Carregar mais antigas</Button>
+          )}
+          {truncated && limit >= MAX && (
+            <p className="text-xs text-muted-foreground text-center">Limite de {MAX} ações por consulta. Reduza o período ou filtre o tipo para ver as mais antigas.</p>
+          )}
         </div>
       </DialogContent>
     </Dialog>

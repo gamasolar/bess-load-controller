@@ -110,17 +110,23 @@ export default function Scada() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [inverterId, setInverterId] = useState<number | null>(null);
   const [now, setNow] = useState(() => new Date());
-  const [fit, setFit] = useState({ mobile: false, scale: 1, scene: 0.3 });
+  const [fit, setFit] = useState({ mobile: false, scale: 1, scene: 0.3, w: W, h: H });
   const lastRound = useRef<{ slug: string; battery: number; pv: number; load: number } | null>(null);
 
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 30_000); return () => clearInterval(t); }, []);
   useEffect(() => {
     const apply = () => {
       const mobile = window.innerWidth < 900;
+      // O quadro de projeto (1672 × 941) cresce na largura ou na altura para
+      // acompanhar a proporção da janela: a tela ocupa tudo, sem tarjas.
+      const aspect = window.innerWidth / window.innerHeight;
+      const w = aspect >= W / H ? Math.min(H * aspect, 2600) : W;
+      const h = aspect >= W / H ? H : Math.min(W / aspect, 1300);
       setFit({
         mobile,
-        scale: Math.min(window.innerWidth / W, window.innerHeight / H),
+        scale: Math.min(window.innerWidth / w, window.innerHeight / h),
         scene: Math.max(240, window.innerWidth - 24) / 1180,
+        w, h,
       });
     };
     apply();
@@ -236,7 +242,7 @@ export default function Scada() {
         <nav>
           {VIEWS.map((v) => <button key={v} type="button" className={view === v ? "active" : undefined} onClick={() => setView(v)}>{v}</button>)}
           <button type="button" onClick={() => setHistoryOpen(true)}>Eventos</button>
-          {isAdmin && <button type="button" onClick={() => navigate("/configuracoes?aba=automacao")}>Configurações</button>}
+
         </nav>
         <div className="topcard weather">
           <span className="moon">{cur ? (cur.isDay ? "☀" : "☾") : "–"}</span>
@@ -252,7 +258,15 @@ export default function Scada() {
         <div className="topcard refresh" data-live={live}>
           <i /><span>{freshness}</span>
         </div>
-        <button type="button" className="topcard sc-full" onClick={toggleFullscreen} aria-label="Tela cheia" title="Tela cheia"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M2 6.5V2h4.5M11.5 2H16v4.5M16 11.5V16h-4.5M6.5 16H2v-4.5" /></svg></button>
+        <button type="button" className="topcard sc-full" onClick={toggleFullscreen} aria-label="Tela cheia" title="Tela cheia" data-first><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M2 6.5V2h4.5M11.5 2H16v4.5M16 11.5V16h-4.5M6.5 16H2v-4.5" /></svg></button>
+        {isAdmin && (
+          <button type="button" className="topcard sc-full sc-gear" onClick={() => navigate("/configuracoes?aba=automacao")} aria-label="Configurações" title="Configurações">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03Z" />
+            </svg>
+          </button>
+        )}
       </header>
 
       <section className="intro">
@@ -347,6 +361,13 @@ export default function Scada() {
           <span className="tag-title">BOMBA <span className="tag-arrow">↗</span></span>
           <span className="tag-reading"><strong>{reading(load)} <span>kW</span></strong><small>{hasAutomation ? health.short : "Manual"}</small></span>
         </button>
+        {slug === "piscinao" && (
+          <div className="water-control glass">
+          <span>DISTRIBUIÇÃO DE ÁGUA</span>
+          <strong>{waterText}</strong>
+          <small>{waterRunning ? "Queda central · escoando para o reservatório" : "Distribuidor sem vazão"}</small>
+        </div>
+      )}
       </div>
 
       <button type="button" className="glass bottom-node grid" onClick={() => setView("Equipamentos")}>
@@ -360,13 +381,6 @@ export default function Scada() {
           <small>{!hasAutomation ? "Bomba operada no local" : automationOnline ? `Modo ${s?.config.controlMode === "AUTO" ? "automático" : "manual"}` : "Sem comunicação"}</small></span>
       </button>
 
-      {slug === "piscinao" && (
-        <div className="water-control glass">
-          <span>DISTRIBUIÇÃO DE ÁGUA</span>
-          <strong>{waterText}</strong>
-          <small>{waterRunning ? "Queda central · escoando para o reservatório" : "Distribuidor sem vazão"}</small>
-        </div>
-      )}
 
       <aside className="alarm-area">
         <section className="glass alarms">
@@ -464,8 +478,15 @@ export default function Scada() {
 
   return (
     <div className={`scada${fit.mobile ? " mobile-layout" : ""}${view !== "Visão Geral" ? " internal-view" : ""}`}>
-      <main className="scada-viewport" style={fit.mobile ? undefined : { width: W * fit.scale, height: H * fit.scale }}>
-        <div className="scada-dash" data-plant={slug === "piscinao" ? "piscinao" : "barragem"} style={fit.mobile ? undefined : { transform: `scale(${fit.scale})` }}>
+      <main className="scada-viewport" style={fit.mobile ? undefined : { width: fit.w * fit.scale, height: fit.h * fit.scale }}>
+        <div
+          className="scada-dash"
+          data-plant={slug === "piscinao" ? "piscinao" : "barragem"}
+          style={fit.mobile ? undefined : {
+            transform: `scale(${fit.scale})`, width: fit.w, height: fit.h,
+            ["--k" as string]: Math.max(fit.w / W, fit.h / H), ["--dy" as string]: `${fit.h - H}px`,
+          }}
+        >
           {body}
         </div>
       </main>
