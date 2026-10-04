@@ -2,16 +2,20 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Users, Cog, MessageSquare, Battery, Palette } from "lucide-react";
+import { Users, Cog, MessageSquare, Battery, Palette, Zap } from "lucide-react";
 import { UsersTab } from "@/components/settings/UsersTab";
 import { SystemTab } from "@/components/settings/SystemTab";
 import { WhatsappTab } from "@/components/settings/WhatsappTab";
 import { SitesTab } from "@/components/settings/SitesTab";
 import { PersonalizacaoTab } from "@/components/settings/PersonalizacaoTab";
+import { AutomacaoTab } from "@/components/settings/AutomacaoTab";
 
 export default function Settings() {
   const { isAdmin, loading } = useAuth();
-  const [tab, setTab] = useState<"users" | "sites" | "personalizacao" | "system" | "whatsapp">("users");
+  type TabId = "users" | "sites" | "automacao" | "personalizacao" | "system" | "whatsapp";
+  // ?aba=automacao abre direto na aba (usado pelo link da tela de supervisão).
+  const fromUrl = new URLSearchParams(window.location.search).get("aba") as TabId | null;
+  const [tab, setTab] = useState<TabId>(fromUrl === "automacao" ? "automacao" : "users");
 
   if (loading) {
     return (
@@ -46,12 +50,15 @@ export default function Settings() {
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="w-full">
-        <TabsList className="grid w-full grid-cols-5 max-w-2xl">
+        <TabsList className="grid w-full grid-cols-3 sm:grid-cols-6 max-w-3xl h-auto">
           <TabsTrigger value="users" className="gap-1.5">
             <Users className="w-3.5 h-3.5" /> Usuários
           </TabsTrigger>
           <TabsTrigger value="sites" className="gap-1.5">
             <Battery className="w-3.5 h-3.5" /> Sites
+          </TabsTrigger>
+          <TabsTrigger value="automacao" className="gap-1.5">
+            <Zap className="w-3.5 h-3.5" /> Automação
           </TabsTrigger>
           <TabsTrigger value="personalizacao" className="gap-1.5">
             <Palette className="w-3.5 h-3.5" /> Personalização
@@ -69,6 +76,9 @@ export default function Settings() {
         </TabsContent>
         <TabsContent value="sites" className="mt-5">
           <SitesTab />
+        </TabsContent>
+        <TabsContent value="automacao" className="mt-5">
+          <AutomacaoTab />
         </TabsContent>
         <TabsContent value="personalizacao" className="mt-5">
           <PersonalizacaoTab />

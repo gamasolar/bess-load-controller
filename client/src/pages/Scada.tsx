@@ -21,6 +21,7 @@ import {
 import { ConfigModalV2 } from "@/components/v2/ConfigModalV2";
 import { HistoryModal } from "@/components/v2/HistoryModal";
 import { PumpStatsModal } from "@/components/v2/PumpStatsModal";
+import { DecisionPanel } from "@/components/v2/DecisionPanel";
 import { AllReadings, History, Inverter, ago, deviceTitle, num, pointValue, sentence, type Device } from "./Plant";
 import "./plant.css";
 import "./scada-base.css";
@@ -170,6 +171,16 @@ export default function Scada() {
   const load = live ? held?.load ?? s?.state.currentLoadPower ?? null : null;
   const freshness = status.isLoading ? "Carregando…" : status.error ? "Erro ao consultar o servidor" : noData ? "Sem leitura" : stale ? `Sem atualização ${ago(age)}` : `Atualizado ${ago(age)}`;
 
+  const estimated = s?.derived.socSource === "ESTIMATED";
+  const inBlackout = soc != null && s != null && soc <= s.config.socBlackout;
+  const onToday = s?.state.pumpOnSecondsToday ?? null;
+  const rainPct = weather && "available" in weather && weather.available && weather.hourly.length
+    ? Math.max(...weather.hourly.slice(0, 6).map((h) => h.precipitationProbabilityPct ?? 0)) : null;
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen?.().catch(() => {});
+  };
+
   const health = HEALTH_TEXT[(s?.derived as { loadHealth?: string } | undefined)?.loadHealth ?? "UNKNOWN"] ?? HEALTH_TEXT.UNKNOWN;
   const automationOnline = !!s?.state.sonoffOnline && !!s?.state.mqttConnected;
   const hasAutomation = !!s?.site.mqttTopic;
@@ -225,6 +236,7 @@ export default function Scada() {
         <nav>
           {VIEWS.map((v) => <button key={v} type="button" className={view === v ? "active" : undefined} onClick={() => setView(v)}>{v}</button>)}
           <button type="button" onClick={() => setHistoryOpen(true)}>Eventos</button>
+          {isAdmin && <button type="button" onClick={() => navigate("/configuracoes?aba=automacao")}>Configurações</button>}
         </nav>
         <div className="topcard weather">
           <span className="moon">{cur ? (cur.isDay ? "☀" : "☾") : "–"}</span>
@@ -240,6 +252,7 @@ export default function Scada() {
         <div className="topcard refresh" data-live={live}>
           <i /><span>{freshness}</span>
         </div>
+        <button type="button" className="topcard sc-full" onClick={toggleFullscreen} aria-label="Tela cheia" title="Tela cheia">⛶</button>
       </header>
 
       <section className="intro">
@@ -247,6 +260,7 @@ export default function Scada() {
         <h1>{s ? shortName(s.site.name) : " "}</h1>
         <div className="critical" data-level={level}>{levelText}</div>
         <p className="summary">{s ? (live ? sentence(soc, battery, pv, load) : `${freshness}. ${soc != null ? `Último SOC ${num(soc, 0)}%.` : ""}`) : "Lendo a planta…"}</p>
+        {inBlackout && <p className="sc-blackout">SOC em zona de BLACKOUT: desligamento forçado, mesmo em modo manual.</p>}
         <button type="button" className="outline" onClick={() => setView("Alarmes")}>Ver diagnóstico <span>→</span></button>
       </section>
 
@@ -326,7 +340,7 @@ export default function Scada() {
           <span className="tag-status" data-bad={!!invBad}>● {invStatus}</span>
         </button>
         <button type="button" className="equipment-tag bess-tag" onClick={() => setView("Equipamentos")}>
-          <span className="tag-title">BESS <span className="tag-soc" data-low={soc != null && s != null && soc <= s.config.socMinDesliga}>SOC {soc == null ? "--" : `${num(soc, 0)}%`}</span><span className="tag-arrow">↗</span></span>
+          <span className="tag-title">BESS <span className="tag-soc" data-low={soc != null && s != null && soc <= s.config.socMinDesliga}>SOC {soc == null ? "--" : `${num(soc, 0)}%`}{estimated ? " est." : ""}</span><span className="tag-arrow">↗</span></span>
           <span className="tag-reading"><strong>{reading(battery == null ? null : Math.abs(battery))} <span>kW</span></strong><small>{!live ? "Sem leitura" : charging ? "Carregando" : discharging ? "Descarregando" : "Em espera"}</small></span>
         </button>
         <button type="button" className="equipment-tag pump-tag" onClick={() => setPumpOpen(true)}>
@@ -371,7 +385,7 @@ export default function Scada() {
               <span><b className="moon">{cur.isDay ? "☀" : "☾"}</b><span><strong>{Math.round(cur.tempC)}°C</strong><small>{weatherLabel(cur.weatherCode)}</small></span></span>
               <span><b className="blue">◈</b><span>{num(cur.humidity, 0)}%<small>Umidade</small></span></span>
               <span><b className="blue">≋</b><span>{num(cur.windKmh, 0)} km/h<small>Vento</small></span></span>
-              <span><b className="yellow">☁</b><span>{num(cur.cloudCoverPct, 0)}%<small>Nuvens</small></span></span>
+              <span><b className="yellow">☂</b><span>{rainPct == null ? "--" : `${num(rainPct, 0)}%`}<small>Chuva em 6 h</small></span></span>
             </div>
           ) : <p className="sc-empty">Clima indisponível.</p>}
         </section>
@@ -385,11 +399,11 @@ export default function Scada() {
               <svg viewBox="0 0 160 160"><circle cx="80" cy="80" r="64" fill="none" stroke="#102633" strokeWidth="14" />
                 {soc != null && <circle cx="80" cy="80" r="64" fill="none" stroke={s && soc <= s.config.socMinDesliga ? "#ff4f58" : "#5cc6c0"} strokeWidth="14" strokeLinecap="round" strokeDasharray={`${(Math.max(1, soc) / 100) * 402.12} 402.12`} transform="rotate(-90 80 80)" />}
               </svg>
-              <div><strong>{soc == null ? "--" : `${num(soc, 0)}%`}</strong><span className={s && soc != null && soc <= s.config.socMinDesliga ? "red" : undefined}>{soc == null ? "Sem leitura" : s && soc <= s.config.socMinDesliga ? "Baixo" : stale ? "Desatualizado" : "Normal"}</span></div>
+              <div><strong>{soc == null ? "--" : `${num(soc, 0)}%`}</strong><span className={s && soc != null && soc <= s.config.socMinDesliga ? "red" : undefined}>{soc == null ? "Sem leitura" : estimated ? "Estimado" : s && soc <= s.config.socMinDesliga ? "Baixo" : stale ? "Desatualizado" : "Normal"}</span></div>
             </div>
             <dl>
               <div><dt>Energia disponível (est.)</dt><dd>{soc == null ? "-- kWh" : `${num((soc / 100) * usableKwh, 0)} kWh`}</dd></div>
-              <div><dt>Desliga / religa a bomba</dt><dd>{s ? `${s.config.socMinDesliga}% / ${s.config.socMinReliga}%` : "--"}</dd></div>
+              <div><dt>Blackout / desliga / religa</dt><dd>{s ? `${s.config.socBlackout}% / ${s.config.socMinDesliga}% / ${s.config.socMinReliga}%` : "--"}</dd></div>
               <div><dt>Ciclos da bateria (est.)</dt><dd>{cycles?.since ? `${num(cycles.cycles, 0)} / ${num(cycles.warrantyCycles, 0)}` : "--"}</dd></div>
             </dl>
           </div>
@@ -466,8 +480,11 @@ export default function Scada() {
               <div><dt>Último comando</dt><dd>{s.state.loadStatus === "on" ? "Ligar" : "Desligar"}</dd></div>
               <div><dt>Automação</dt><dd data-tone={automationOnline ? "ok" : "bad"}>{!hasAutomation ? "Não instalada" : automationOnline ? "Online" : "Sem comunicação"}</dd></div>
               <div><dt>Modo</dt><dd>{s.config.controlMode === "AUTO" ? "Automático" : "Manual"}</dd></div>
+              {onToday != null && <div><dt>Ligada hoje</dt><dd>{Math.floor(onToday / 3600)} h {Math.round((onToday % 3600) / 60)} min</dd></div>}
+              {s.derived.cooldownRemainingMs > 0 && <div><dt>Cooldown</dt><dd data-tone="warn">próxima ação liberada em {Math.ceil(s.derived.cooldownRemainingMs / 60000)} min</dd></div>}
               <div><dt>Faixa configurada</dt><dd>desliga em {s.config.socMinDesliga}% · religa em {s.config.socMinReliga}%</dd></div>
             </dl>
+            {hasAutomation && <div className="sc-decision"><DecisionPanel s={s} /></div>}
             {hasAutomation && !automationOnline && <p className="sc-warn">Automação sem comunicação: um comando enviado agora não chega à bomba.</p>}
             {isAdmin ? (
               <div className="sc-actions">
