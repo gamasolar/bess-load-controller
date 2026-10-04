@@ -8,6 +8,7 @@ import Settings from "@/pages/Settings";
 import AcceptInvitation from "@/pages/AcceptInvitation";
 import Tablet from "@/pages/Tablet";
 import Plant from "@/pages/Plant";
+import Scada from "@/pages/Scada";
 
 export default function App() {
   const [location] = useLocation();
@@ -25,6 +26,16 @@ export default function App() {
     return (
       <ThemeProvider defaultTheme="dark">
         <AcceptInvitation />
+        <Toaster />
+      </ThemeProvider>
+    );
+  }
+
+  // Supervisão em tela cheia (prévia do novo front), fora do layout com menu.
+  if (location.startsWith("/scada")) {
+    return (
+      <ThemeProvider defaultTheme="dark">
+        <Scada />
         <Toaster />
       </ThemeProvider>
     );

@@ -1,0 +1,83 @@
+/*
+ * Ajustes da tela SCADA sobre o CSS do pacote (scada-base.css).
+ * Só o que muda por estarmos com dados reais e dentro do app.
+ */
+.scada {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 0;
+  line-height: normal;
+}
+.scada.mobile-layout { display: block; overflow-x: hidden; overflow-y: auto; }
+.scada img { max-width: none; }
+.scada button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* estados */
+.scada .sc-green { color: #40dca0; }
+.scada .sc-empty { color: #9db7c9; font-size: 12px; margin: 10px 0 0; }
+.scada .critical[data-level="warning"] { background: linear-gradient(#8a5a05, #5c3c03); border-color: #ffc34b; box-shadow: 0 0 25px #ffb70030; }
+.scada .critical[data-level="normal"] { background: linear-gradient(#0b6a4a, #074331); border-color: #40dca0; box-shadow: 0 0 25px #40dca030; }
+.scada .refresh[data-live="false"] i { background: #ff4f58; box-shadow: 0 0 18px #ff4f5880; }
+.scada .status-title i[data-level="critical"] { background: #ff4f58; box-shadow: 0 0 18px #ff4f5880; }
+.scada .status-title i[data-level="warning"] { background: #ffc34b; box-shadow: 0 0 18px #ffc34b80; }
+.scada .tag-soc { color: #8be9e2; }
+.scada .tag-soc[data-low="true"] { color: #ff8187; }
+.scada .tag-status[data-bad="true"] { color: #ff8187; }
+.scada .intro .summary { max-width: 440px; }
+.scada .flow-selector label { font-size: 9px; letter-spacing: 1.2px; color: #a6c0d2; }
+.scada .sc-fresh { font-size: 10px; color: #83d5e8; }
+.scada .sc-fresh[data-live="false"] { color: #ff8187; }
+.scada .flow-controls { cursor: default; }
+.scada .water-control { cursor: default; }
+.scada .water-control strong { font-size: 11px; font-weight: 600; }
+.scada .device strong { white-space: nowrap; }
+.scada .device small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+.scada .chart svg { overflow: visible; }
+.scada .compact-alarm { cursor: pointer; }
+
+/* área de trabalho: reaproveita os componentes da página da planta */
+.scada #workspace { z-index: 6; }
+.scada .plant--embed { margin: 0; min-height: 0; background: none; font-size: 15px; }
+.scada .plant--embed table { font-size: inherit; }
+.scada .plant--embed td, .scada .plant--embed th { padding: 0.2rem 0 0.2rem 1rem; border-bottom: 0; }
+.scada .plant--embed small { display: inline; font-size: inherit; color: inherit; line-height: inherit; }
+.scada .plant--embed strong { display: inline; }
+.scada .plant--embed .facts dd small { color: var(--pl-mist); font-size: 0.875rem; }
+.scada .plant--embed button:hover { filter: none; }
+.scada .sc-sub { font-size: 18px; margin: 26px 0 10px; }
+.scada #workspace .alarm-row { margin-top: 10px; }
+.scada #workspace .alarm-text { font-size: 14px; line-height: 21px; }
+
+/* diálogo da bomba (sobreposição própria: os modais do sistema abrem por cima) */
+.sc-overlay { position: fixed; inset: 0; z-index: 40; background: #0009; backdrop-filter: blur(5px); display: grid; place-items: center; padding: 16px; }
+.sc-dialog { width: min(600px, 100%); max-height: 90dvh; overflow: auto; background: linear-gradient(125deg, #0f2634, #03131d); color: #edf6ff; border: 1px solid #44677a; border-radius: 16px; padding: 22px; box-shadow: 0 20px 100px #0009; }
+.sc-dialog h2 { font-size: 21px; margin: 0; }
+.sc-close { font-size: 28px; line-height: 1; padding: 0 6px; }
+.sc-rows { margin: 14px 0; }
+.sc-rows > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-top: 1px solid #27404e; font-size: 14px; }
+.sc-rows dt { color: #9db7c9; }
+.sc-rows dd { margin: 0; text-align: right; }
+.sc-rows dd[data-tone="ok"] { color: #40dca0; }
+.sc-rows dd[data-tone="warn"] { color: #ffc34b; }
+.sc-rows dd[data-tone="bad"] { color: #ff8187; }
+.sc-warn { color: #ffc34b; font-size: 13px; margin: 0 0 12px; }
+.sc-note { color: #9db7c9; font-size: 13px; margin: 0 0 12px; }
+.sc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.sc-actions .outline { font-size: 13px; padding: 9px 14px; }
+
+@media (max-width: 899px) {
+  .scada .intro .summary { max-width: none; }
+  .scada .scene-layer { background-image: url('/scada/barragem.webp'); }
+  .scada .scada-dash[data-plant="piscinao"] .scene-layer { background-image: url('/scada/piscinao.webp'); }
+  .scada .topcard.refresh { display: flex; }
+  .scada .device small { max-width: none; }
+}
+
+/* plant.css também define .cycles; aqui vale o do rodapé do pacote */
+.scada footer .cycles { margin: 0; max-width: none; flex: none; }
+.scada .tag-reading strong { white-space: nowrap; }

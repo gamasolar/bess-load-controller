@@ -9,7 +9,7 @@ import { PlantSceneArt } from "./PlantSceneArt";
 import "./plant.css";
 
 type Outputs = inferRouterOutputs<AppRouter>;
-type Device = Outputs["telemetry"]["site"]["devices"][number];
+export type Device = Outputs["telemetry"]["site"]["devices"][number];
 type Point = Device["points"][number];
 
 type TabId = "agora" | "inversores" | "historico" | "leituras";
@@ -39,7 +39,7 @@ const GROUP_TITLES: Record<string, string> = {
 };
 
 /** Hora local da planta (as duas ficam no fuso de Brasília). */
-function plantHour(): number {
+export function plantHour(): number {
   // ?hora=12 força a hora da cena, para conferir a versão de dia ou de noite.
   const forced = Number(new URLSearchParams(window.location.search).get("hora"));
   if (window.location.search.includes("hora=") && Number.isFinite(forced)) return forced;
@@ -48,12 +48,12 @@ function plantHour(): number {
   return get("hour") + get("minute") / 60;
 }
 
-function num(v: number | null | undefined, digits = 1): string {
+export function num(v: number | null | undefined, digits = 1): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return v.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
 }
 
-function ago(seconds: number | null | undefined): string {
+export function ago(seconds: number | null | undefined): string {
   if (seconds == null) return "sem leitura";
   if (seconds < 90) return "agora há pouco";
   const min = Math.round(seconds / 60);
@@ -63,7 +63,7 @@ function ago(seconds: number | null | undefined): string {
   return `há ${Math.round(h / 24)} dias`;
 }
 
-function pointValue(d: Device, key: string): number | null {
+export function pointValue(d: Device, key: string): number | null {
   const p = d.points.find((x) => x.rawKey === key);
   return p && typeof p.value === "number" ? p.value : null;
 }
@@ -78,7 +78,7 @@ function showPoint(p: Point): string {
   return String(p.value);
 }
 
-function deviceTitle(d: Device, index: number): string {
+export function deviceTitle(d: Device, index: number): string {
   if (d.name) return d.name;
   if (d.kind === "ess") return `Bateria ${index + 1}`;
   if (d.kind === "inverter") return `Inversor ${index + 1}`;
@@ -86,7 +86,7 @@ function deviceTitle(d: Device, index: number): string {
 }
 
 /** Frase única que diz, em português comum, o que a planta está fazendo. */
-function sentence(soc: number | null, battery: number | null, pv: number | null, load: number | null): string {
+export function sentence(soc: number | null, battery: number | null, pv: number | null, load: number | null): string {
   if (soc == null) return "Ainda sem leitura da bateria.";
   const parts: string[] = [];
   let first = `Bateria em ${num(soc, 0)}%`;
@@ -142,7 +142,7 @@ function Tank({ title, serial, soc, power, soh, marks }: {
   );
 }
 
-function Inverter({ device, title }: { device: Device; title: string }) {
+export function Inverter({ device, title }: { device: Device; title: string }) {
   const [picked, setPicked] = useState<number | null>(null);
   const state = device.summary.status ?? "sem informação de estado";
   const tone = /falha|parado|desligado/i.test(state) ? "bad" : /rede|off-grid|gerando|operando/i.test(state) ? "ok" : "idle";
@@ -283,7 +283,7 @@ const HISTORY_KEYS: Record<string, { left: string; right: string }> = {
   inverter: { left: "active_power", right: "temperature" },
 };
 
-function History({ devices, titles }: { devices: Device[]; titles: Map<number, string> }) {
+export function History({ devices, titles }: { devices: Device[]; titles: Map<number, string> }) {
   const usable = devices.filter((d) => HISTORY_KEYS[d.kind]);
   const [deviceId, setDeviceId] = useState<number | null>(null);
   const [hours, setHours] = useState(24);
@@ -359,7 +359,7 @@ function History({ devices, titles }: { devices: Device[]; titles: Map<number, s
   );
 }
 
-function AllReadings({ devices, titles }: { devices: Device[]; titles: Map<number, string> }) {
+export function AllReadings({ devices, titles }: { devices: Device[]; titles: Map<number, string> }) {
   const [deviceId, setDeviceId] = useState<number | null>(null);
   const device = devices.find((d) => d.id === deviceId) ?? devices[0];
   const narrow = typeof matchMedia === "function" && matchMedia("(max-width: 760px)").matches;
