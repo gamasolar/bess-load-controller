@@ -1,0 +1,82 @@
+/*
+ * Tema único do sistema, tirado do novo front (pacote gama-scada):
+ * azul-petróleo escuro, vidro, bordas #254352 e ciano como cor de ação.
+ * Vale para tudo que usa os componentes padrão: modais, Configurações,
+ * login. Assim os cartões herdados ficam com o mesmo visual da supervisão.
+ */
+:root, .dark {
+  --radius: 0.75rem;
+  --background: #030d13;
+  --foreground: #f3f7fa;
+  --card: #0a1b26;
+  --card-foreground: #f3f7fa;
+  --popover: #0c1f2b;
+  --popover-foreground: #f3f7fa;
+  --primary: #35bfff;
+  --primary-foreground: #03131d;
+  --secondary: #0f2a38;
+  --secondary-foreground: #e4f3fa;
+  --muted: #0d2430;
+  --muted-foreground: #b3c7d9;
+  --accent: #123446;
+  --accent-foreground: #f3f7fa;
+  --border: #254352;
+  --input: #2d4a5b;
+  --ring: #74d9ff;
+  --sidebar: #04121c;
+  --sidebar-foreground: #dbe9f2;
+  --sidebar-primary: #35bfff;
+  --sidebar-primary-foreground: #03131d;
+  --sidebar-accent: #0f2a38;
+  --sidebar-accent-foreground: #f3f7fa;
+  --sidebar-border: #1c3644;
+  --sidebar-ring: #74d9ff;
+}
+html body {
+  font-family: 'Arial Narrow', 'Roboto Condensed', Arial, sans-serif;
+  background: #030d13;
+}
+
+/* superfícies de vidro, como os painéis da supervisão */
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"],
+[data-slot="sheet-content"],
+[data-slot="popover-content"] {
+  background: linear-gradient(125deg, #0f2634, #03131d);
+  border: 1px solid #44677a;
+  border-radius: 16px;
+  box-shadow: 0 20px 100px #0009;
+  color: #edf6ff;
+}
+[data-slot="dialog-overlay"],
+[data-slot="alert-dialog-overlay"] {
+  background: #0009;
+  backdrop-filter: blur(5px);
+}
+[data-slot="dialog-title"],
+[data-slot="alert-dialog-title"] { font-size: 1.3rem; font-weight: 600; }
+[data-slot="card"] {
+  background: linear-gradient(125deg, #0c1923ed, #02121bf0);
+  border: 1px solid #254352;
+  border-radius: 12px;
+  box-shadow: 0 5px 20px #0003;
+}
+[data-slot="button"][data-variant="outline"],
+button[data-slot="button"].border {
+  border-color: #46748c;
+  background: #071622cf;
+}
+[data-slot="button"][data-variant="outline"]:hover { background: #102c3b; border-color: #67bedf; }
+[data-slot="input"], [data-slot="select-trigger"], [data-slot="textarea"] {
+  background: #0b2230;
+  border-color: #2d4a5b;
+  color: #e4f3fa;
+}
+[data-slot="tabs-list"] { background: #0b2230; border: 1px solid #254352; }
+[data-slot="tabs-trigger"][data-state="active"] { background: #23516b; color: #fff; }
+/* blocos internos dos modais herdados (resumos, painel de decisão) */
+[data-slot="dialog-content"] .bg-black\/30,
+[data-slot="dialog-content"] .bg-black\/20,
+.sc-dialog .bg-black\/20 { background: #081a25; }
+[data-slot="dialog-content"] .border-white\/5,
+[data-slot="dialog-content"] .border-white\/10 { border-color: #213a4b; }

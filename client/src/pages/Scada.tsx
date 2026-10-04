@@ -252,7 +252,7 @@ export default function Scada() {
         <div className="topcard refresh" data-live={live}>
           <i /><span>{freshness}</span>
         </div>
-        <button type="button" className="topcard sc-full" onClick={toggleFullscreen} aria-label="Tela cheia" title="Tela cheia">⛶</button>
+        <button type="button" className="topcard sc-full" onClick={toggleFullscreen} aria-label="Tela cheia" title="Tela cheia"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M2 6.5V2h4.5M11.5 2H16v4.5M16 11.5V16h-4.5M6.5 16H2v-4.5" /></svg></button>
       </header>
 
       <section className="intro">
@@ -436,7 +436,7 @@ export default function Scada() {
             <button type="button" className="outline" onClick={() => setView("Visão Geral")}>← Visão geral</button>
           </div>
           <div id="workspace-body" className="plant plant--embed">
-            {view === "Tendências" && (devices.length ? <History devices={devices} titles={titles} /> : <p className="sc-empty">Sem equipamentos com histórico.</p>)}
+            {view === "Tendências" && (devices.length ? <div className="glass sc-panel"><History devices={devices} titles={titles} /></div> : <p className="sc-empty">Sem equipamentos com histórico.</p>)}
             {view === "Equipamentos" && (
               <>
                 {inverters.length > 1 && (
@@ -444,9 +444,9 @@ export default function Scada() {
                     {inverters.map((d) => <button key={d.id} type="button" aria-pressed={d.id === shownInverter?.id} onClick={() => setInverterId(d.id)}>{titles.get(d.id)}</button>)}
                   </div>
                 )}
-                {shownInverter && <Inverter key={shownInverter.id} device={shownInverter} title={titles.get(shownInverter.id) ?? "Inversor"} />}
+                {shownInverter && <div className="glass sc-panel"><Inverter key={shownInverter.id} device={shownInverter} title={titles.get(shownInverter.id) ?? "Inversor"} /></div>}
                 <h2 className="sc-sub">Todas as leituras</h2>
-                {devices.length ? <AllReadings devices={devices} titles={titles} /> : <p className="sc-empty">Nenhum equipamento enviou leitura ainda.</p>}
+                {devices.length ? <div className="glass sc-panel"><AllReadings devices={devices} titles={titles} /></div> : <p className="sc-empty">Nenhum equipamento enviou leitura ainda.</p>}
               </>
             )}
             {view === "Alarmes" && (alarms.length === 0 ? <p className="sc-empty">Nenhum alarme ativo nesta planta.</p> : alarms.map((a) => (

@@ -7,6 +7,7 @@ import superjson from "superjson";
 import App from "./App";
 import { LOGIN_PATH } from "./const";
 import "./index.css";
+import "./scada-theme.css";
 
 const queryClient = new QueryClient();
 
