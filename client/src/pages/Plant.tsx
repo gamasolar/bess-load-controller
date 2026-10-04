@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useRoute } from "wouter";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { trpc } from "@/lib/trpc";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
-import { PlantScene } from "./PlantScene";
+import { PlantScene, type SceneDetail } from "./PlantScene";
+import { PlantSceneArt } from "./PlantSceneArt";
 import "./plant.css";
 
 type Outputs = inferRouterOutputs<AppRouter>;
@@ -39,6 +40,9 @@ const GROUP_TITLES: Record<string, string> = {
 
 /** Hora local da planta (as duas ficam no fuso de Brasília). */
 function plantHour(): number {
+  // ?hora=12 força a hora da cena, para conferir a versão de dia ou de noite.
+  const forced = Number(new URLSearchParams(window.location.search).get("hora"));
+  if (window.location.search.includes("hora=") && Number.isFinite(forced)) return forced;
   const parts = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "numeric", minute: "numeric", hour12: false }).formatToParts(new Date());
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
   return get("hour") + get("minute") / 60;
@@ -381,21 +385,21 @@ function AllReadings({ devices, titles }: { devices: Device[]; titles: Map<numbe
       </div>
       {/* Ficha única: todos os grupos lado a lado. No celular, os grupos longos começam fechados. */}
       <div className="sheet" key={device.id}>
-        {groups.map(([group, points]) => {
+        {groups.map(([group, points], gi) => {
           const strings = group === "strings" ? stringPairs(points) : [];
           return (
-            <details key={group} open={!narrow || points.length <= 6}>
+            <details key={group} open={!narrow || gi === 0}>
               <summary>{GROUP_TITLES[group] ?? group}<small>{strings.length || points.length}</small></summary>
               {strings.length > 0 ? (
                 <div className="sheet-strings">
                   {strings.map((r) => (
-                    <div key={r.n}><span>PV{r.n}</span><span>{num(r.v)} V</span><span>{num(r.i, 2)} A</span></div>
+                    <div key={r.n}><span>PV{r.n}</span><span>{num(r.v, 0)} V</span><span>{num(r.i, 2)} A</span></div>
                   ))}
                 </div>
               ) : group === "rede" && points.some((p) => p.rawKey === "a_u") ? (
                 <>
                   <div className="sheet-phases">
-                    <div><span>Fase</span><span>Tensão</span><span>Corrente</span><span>Entre fases</span></div>
+                    <div><span>Fase</span><span>Tensão</span><span>Corrente</span><span>Linha</span></div>
                     {([["A", "a", "ab_u"], ["B", "b", "bc_u"], ["C", "c", "ca_u"]] as const).map(([name, k, line]) => (
                       <div key={name}>
                         <span>{name}</span>
@@ -450,8 +454,9 @@ export default function Plant() {
   const slug = params?.slug ?? "";
   const { data: sites } = trpc.bess.sites.useQuery(undefined, { staleTime: 5 * 60_000 });
   const status = trpc.bess.getSiteStatus.useQuery({ slug }, { enabled: !!slug, refetchInterval: 30_000 });
-  const telemetry = trpc.telemetry.site.useQuery({ slug }, { enabled: !!slug, refetchInterval: 60_000, retry: false });
+  const telemetry = trpc.telemetry.site.useQuery({ slug }, { enabled: !!slug, refetchInterval: 30_000, retry: false });
 
+  const lastRound = useRef<{ slug: string; battery: number; pv: number; load: number; byBattery: Record<number, number | null> } | null>(null);
   const [tab, setTab] = useState<TabId>("agora");
   const [inverterId, setInverterId] = useState<number | null>(null);
 
@@ -490,9 +495,27 @@ export default function Plant() {
 
   const s = status.data;
   const soc = s?.derived.soc ?? s?.state.currentSoc ?? null;
-  const battery = s?.state.currentBatteryPower ?? null;
-  const pv = s?.state.currentPvPower ?? null;
-  const load = s?.state.currentLoadPower ?? null;
+  // A coleta lê a bateria e, 70 s depois, os inversores. Nesse intervalo o
+  // estado mistura bateria nova com solar da rodada anterior (ao amanhecer dá
+  // "carrega 2,8 kW com sol de 2 kW"). Só mostramos potências de uma rodada
+  // completa: inversores lidos depois da bateria.
+  const round = (() => {
+    if (batteries.length === 0 || inverters.length === 0) return null;
+    const at = (d: Device) => (d.lastSampleAt ? new Date(d.lastSampleAt).getTime() : 0);
+    const bat = batteries.reduce((a, d) => a + (pointValue(d, "ch_discharge_power") ?? 0), 0);
+    const sun = inverters.reduce((a, d) => a + (pointValue(d, "active_power") ?? 0), 0);
+    return {
+      complete: Math.min(...inverters.map(at)) >= Math.max(...batteries.map(at)),
+      battery: bat, pv: sun, load: Math.max(0, sun - bat),
+      byBattery: Object.fromEntries(batteries.map((d) => [d.id, pointValue(d, "ch_discharge_power")])) as Record<number, number | null>,
+    };
+  })();
+  if (round?.complete) lastRound.current = { slug, ...round };
+  const held = lastRound.current?.slug === slug ? lastRound.current : null;
+  const battery = held?.battery ?? s?.state.currentBatteryPower ?? null;
+  const pv = held?.pv ?? s?.state.currentPvPower ?? null;
+  const load = held?.load ?? s?.state.currentLoadPower ?? null;
+  const batteryPower = (b: Device) => (held && b.id in held.byBattery ? held.byBattery[b.id] : pointValue(b, "ch_discharge_power"));
   const age = s?.derived.socAgeSeconds ?? null;
   const media = s?.site.backgroundUrl ?? null;
   const isVideo = !!media && /\.(mp4|webm)$/i.test(media);
@@ -511,6 +534,60 @@ export default function Plant() {
     .map((d) => ({ t: pointValue(d, "temperature"), name: titles.get(d.id) }))
     .filter((x): x is { t: number; name: string } => x.t != null)
     .sort((a, b) => b.t - a.t)[0];
+
+  // Padrão: cena em vetor. A versão com arte gerada fica em ?cena=arte.
+  const Scene = new URLSearchParams(window.location.search).get("cena") === "arte" ? PlantSceneArt : PlantScene;
+  const unit = (v: number | null, u: string, d = 1) => (v == null ? "—" : `${num(v, d)} ${u}`);
+  const pumpText = !s ? "—" : !s.state.sonoffOnline ? "automação sem comunicação" : s.derived.pumpState === "ON" ? "ligada" : s.derived.pumpState === "OFF" ? "desligada" : "estado desconhecido";
+  const onToday = s?.state.pumpOnSecondsToday ?? null;
+  const sceneDetails: Record<string, SceneDetail> = {
+    solar: {
+      title: "Geração solar",
+      rows: [
+        ["Potência agora", unit(pv, "kW")],
+        ...inverters.map((d): [string, string] => [titles.get(d.id) ?? "Inversor", unit(pointValue(d, "active_power"), "kW")]),
+        ["Gerado hoje", unit(inverters.reduce((a, d) => a + (pointValue(d, "day_cap") ?? 0), 0), "kWh")],
+      ],
+      tab: "inversores", tabLabel: "Ver inversores",
+    },
+    load: {
+      title: "Consumo e bomba",
+      rows: [
+        ["Consumo agora", unit(load, "kW")],
+        ["Bomba", pumpText],
+        ...(onToday != null ? [["Ligada hoje", `${Math.floor(onToday / 3600)} h ${Math.round((onToday % 3600) / 60)} min`] as [string, string]] : []),
+      ],
+      tab: "historico", tabLabel: "Ver histórico",
+    },
+  };
+  for (const b of batteries) {
+    sceneDetails[`bat:${b.id}`] = {
+      title: titles.get(b.id) ?? "Bateria",
+      rows: [
+        ["Carga", unit(pointValue(b, "battery_soc"), "%", 0)],
+        ["Potência", unit(batteryPower(b), "kW")],
+        ["Saúde", unit(pointValue(b, "battery_soh"), "%", 0)],
+        ["Carregado hoje", unit(pointValue(b, "charge_cap"), "kWh")],
+        ["Descarregado hoje", unit(pointValue(b, "discharge_cap"), "kWh")],
+        ["Nº de série", b.serial ?? "—"],
+      ],
+      tab: "leituras", tabLabel: "Ver todas as leituras",
+    };
+  }
+  for (const d of inverters) {
+    const st = d.summary.status ?? "—";
+    sceneDetails[`inv:${d.id}`] = {
+      title: titles.get(d.id) ?? "Inversor",
+      rows: [
+        ["Estado", st],
+        ["Potência", unit(pointValue(d, "active_power"), "kW")],
+        ["Temperatura", unit(pointValue(d, "temperature"), "°C")],
+        ["Gerado hoje", unit(pointValue(d, "day_cap"), "kWh")],
+        ["Eficiência", unit(pointValue(d, "efficiency"), "%")],
+      ],
+      tab: `inversores:${d.id}`, tabLabel: "Abrir este inversor",
+    };
+  }
 
   const shownInverter = inverters.find((d) => d.id === inverterId) ?? inverters[0];
 
@@ -554,30 +631,25 @@ export default function Plant() {
       <div className="plant-body">
         {tab === "agora" && alarms.length > 0 && (
           <section className="plant-alarms" aria-label="Alarmes ativos">
-            <h2>{alarms.length === 1 ? "1 alarme ativo" : `${alarms.length} alarmes ativos`}</h2>
-            <ul>
-              {alarms.map((a) => (
-                <li key={a.id} data-severity={a.severity}>
-                  <p>{a.description.split(/(?<=\.)\s/)[0]}</p>
-                  <span>
-                    {a.severity === "CRITICAL" ? "Crítico" : a.severity === "WARNING" ? "Importante" : "Aviso"}, aberto{" "}
-                    {ago(Math.round((Date.now() - new Date(a.openedAt).getTime()) / 1000))}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            {alarms.map((a) => (
+              <p key={a.id} data-severity={a.severity}>
+                <strong>{a.severity === "CRITICAL" ? "Alarme crítico" : a.severity === "WARNING" ? "Alarme" : "Aviso"}</strong>
+                {a.description.split(/(?<=\.)\s/)[0]}
+                <span>aberto {ago(Math.round((Date.now() - new Date(a.openedAt).getTime()) / 1000))}</span>
+              </p>
+            ))}
           </section>
         )}
 
         {tab === "agora" && (
-        <section className="plant-section" aria-labelledby="pl-now">
-          <h2 id="pl-now">Energia agora</h2>
-          <PlantScene
+        <section className="plant-section plant-now-tab" data-alarms={alarms.length > 0} aria-labelledby="pl-now">
+          <h2 id="pl-now" className="plant-sr">Energia agora</h2>
+          <Scene
             hour={plantHour()}
             pv={pv}
             load={load}
             batteries={batteries.length > 0
-              ? batteries.map((b) => ({ id: b.id, title: titles.get(b.id) ?? "Bateria", soc: pointValue(b, "battery_soc"), power: pointValue(b, "ch_discharge_power") }))
+              ? batteries.map((b) => ({ id: b.id, title: titles.get(b.id) ?? "Bateria", soc: pointValue(b, "battery_soc"), power: batteryPower(b) }))
               : [{ id: 0, title: "Bateria", soc, power: battery }]}
             inverters={inverters.map((d) => {
               const st = d.summary.status ?? "";
@@ -589,37 +661,40 @@ export default function Plant() {
             marks={marks}
             pumpNote={!s ? "" : !s.state.sonoffOnline ? "automação sem comunicação" : s.derived.pumpState === "ON" ? "bomba ligada" : s.derived.pumpState === "OFF" ? "bomba desligada" : ""}
             fmt={num}
+            details={sceneDetails}
+            onGo={(target) => {
+              const [name, id] = target.split(":");
+              if (name === "inversores" && id) setInverterId(Number(id));
+              setTab(name as TabId);
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
           />
-          {spread >= 10 && (
-            <p className="plant-note plant-warn" style={{ marginTop: "1.5rem" }}>
-              Baterias com {num(spread, 0)} pontos de diferença de carga.
-            </p>
-          )}
-          {cycles && cycles.since && cycles.cycles > 0 && (() => {
-            const left = Math.max(0, cycles.warrantyCycles - cycles.cycles);
-            const years = cycles.cyclesPerDay > 0 ? left / cycles.cyclesPerDay / 365 : null;
-            return (
-              <div className="cycles">
-                <h3>Ciclos da bateria</h3>
-                <p className="cycles-figure">
-                  cerca de {num(cycles.cycles, 0)} <small>de {num(cycles.warrantyCycles, 0)} ciclos da garantia</small>
-                </p>
-                <div className="cycles-bar" role="img" aria-label={`${num((cycles.cycles / cycles.warrantyCycles) * 100)}% dos ciclos da garantia usados`}>
-                  <i style={{ ["--w" as string]: `${Math.max(0.5, Math.min(100, (cycles.cycles / cycles.warrantyCycles) * 100))}%` }} />
-                </div>
-                <details className="cycles-how">
-                  <summary>Estimativa desde {new Date(cycles.since).toLocaleDateString("pt-BR")}, {num(cycles.cyclesPerDay, 2)} ciclo por dia</summary>
+          <div className="plant-strip">
+            {cycles && cycles.since && cycles.cycles > 0 && (() => {
+              const left = Math.max(0, cycles.warrantyCycles - cycles.cycles);
+              const years = cycles.cyclesPerDay > 0 ? left / cycles.cyclesPerDay / 365 : null;
+              return (
+                <details className="cycles">
+                  <summary>
+                    <span>Ciclos da bateria</span>
+                    <strong>cerca de {num(cycles.cycles, 0)} de {num(cycles.warrantyCycles, 0)}</strong>
+                    <i className="cycles-bar" role="img" aria-label={`${num((cycles.cycles / cycles.warrantyCycles) * 100)}% dos ciclos da garantia usados`}>
+                      <b style={{ ["--w" as string]: `${Math.max(1.5, Math.min(100, (cycles.cycles / cycles.warrantyCycles) * 100))}%` }} />
+                    </i>
+                  </summary>
                   <p className="plant-note">
-                    {num(cycles.dischargedKwh, 0)} kWh descarregados divididos por {num(cycles.usableKwh, 0)} kWh úteis.
+                    Estimativa desde {new Date(cycles.since).toLocaleDateString("pt-BR")}: {num(cycles.dischargedKwh, 0)} kWh descarregados
+                    divididos por {num(cycles.usableKwh, 0)} kWh úteis, {num(cycles.cyclesPerDay, 2)} ciclo por dia.
                     O que a bateria ciclou antes dessa data não está contado.
                     {years != null && (years > cycles.warrantyYears
                       ? ` Nesse ritmo os ciclos levariam cerca de ${num(years, 0)} anos; o prazo de ${cycles.warrantyYears} anos da garantia vence antes.`
                       : ` Nesse ritmo os ciclos se completam em cerca de ${num(years, 1)} anos.`)}
                   </p>
                 </details>
-              </div>
-            );
-          })()}
+              );
+            })()}
+            {spread >= 10 && <p className="plant-warn">Baterias com {num(spread, 0)} pontos de diferença de carga</p>}
+          </div>
         </section>
         )}
 
