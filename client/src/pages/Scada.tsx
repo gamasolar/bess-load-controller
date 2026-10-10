@@ -145,7 +145,8 @@ export default function Scada() {
   });
 
   const s = status.data;
-  const devices = telemetry.data?.devices ?? [];
+  // Ordem do portal da Huawei (INV1, INV2, BESS1, BESS2), não a de descoberta.
+  const devices = [...(telemetry.data?.devices ?? [])].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", "pt-BR", { numeric: true }));
   const batteries = devices.filter((d) => d.kind === "ess");
   const inverters = devices.filter((d) => d.kind === "inverter");
   const titles = useMemo(() => {
