@@ -1,81 +1,82 @@
 /**
  * Checagem automática do painel beta — roda por cron a cada 3h.
  *
- * SÓ LEITURA + alerta. Confere o que os alarmes operacionais 24/7 NÃO cobrem:
- *   1. as páginas /scada respondem 200;
- *   2. o leitor AO VIVO do SmartLogger está gravando (não travou);
- *   3. o relé Waveshare está alcançável por Modbus (só leitura).
- * Manda UMA mensagem no WhatsApp (rotulada como diagnóstico) só quando acha
- * anomalia; fica SILENCIOSO quando tudo está bem (não spamma a cada 3h).
+ * SÓ LEITURA + alerta. Pergunta AO PRÓPRIO SERVIÇO como ele está vendo a planta
+ * (endpoints públicos liveWaveshare/liveSmartlogger) em vez de abrir conexão nova
+ * no relé — o relé Waveshare é sensível a conexão nova e uma piscada dava falso
+ * alarme (visto em 21/10 18:00). O leitor persistente do serviço é o sinal certo.
+ * Confere também que as páginas /scada respondem 200.
  *
- * Não toca em nada do controle (CLAUDE.md §14). Rodar à mão:
- *   set -a; . ./.env; set +a; pnpm tsx server/tools/beta-healthcheck.ts
+ * Manda UMA mensagem no WhatsApp (rotulada como diagnóstico) só quando acha
+ * anomalia; fica SILENCIOSO quando tudo está bem. Não toca em controle (§14).
+ * Rodar à mão:  set -a; . ./.env; set +a; pnpm tsx server/tools/beta-healthcheck.ts
  */
-import mysql from "mysql2/promise";
-import { openRelayReader, readRelaySnapshot } from "../waveshare";
 import { notifyOwner } from "../_core/notification";
 
 const BASE = (process.env.BETA_HEALTH_BASE ?? "https://bess.gamasolar.com.br").replace(/\/+$/, "");
-const SL_STALE_MS = 5 * 60_000; // smartlogger_live sem gravar há mais que isso = leitor travado
+/** Leitura ao vivo mais velha que isto = leitor travado (ele lê a cada ~10s; 90s ≈ 9 ciclos perdidos). */
+const STALE_MS = 90_000;
 
-async function httpStatus(path: string): Promise<number> {
+async function fetchJson<T>(path: string, timeoutMs = 12_000): Promise<{ ok: boolean; status: number; json?: T }> {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 12_000);
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(BASE + path, { signal: ctrl.signal, redirect: "manual" });
-    return r.status;
+    if (!r.ok) return { ok: false, status: r.status };
+    const body = await r.json().catch(() => undefined);
+    return { ok: true, status: r.status, json: body as T };
   } catch {
-    return 0;
+    return { ok: false, status: 0 };
   } finally {
     clearTimeout(t);
   }
 }
 
+/** Desempacota o envelope tRPC-batch-superjson e devolve o payload (ou null). */
+function trpcData<T>(body: unknown): T | null {
+  try {
+    // [{ result: { data: { json: ... } } }]
+    const j = (body as Array<{ result?: { data?: { json?: unknown } } }>)?.[0]?.result?.data?.json;
+    return (j ?? null) as T | null;
+  } catch {
+    return null;
+  }
+}
+
+async function liveFeed(proc: string, slug: string): Promise<{ ok: boolean; ageMs: number } | null> {
+  const input = encodeURIComponent(JSON.stringify({ "0": { json: { slug } } }));
+  const r = await fetchJson(`/api/trpc/bess.${proc}?batch=1&input=${input}`);
+  if (!r.ok) return null; // serviço não respondeu
+  return trpcData<{ ok: boolean; ageMs: number }>(r.json);
+}
+
 async function main(): Promise<void> {
   const problems: string[] = [];
 
-  // 1) Páginas do beta
+  // 1) Páginas do beta respondem?
   for (const slug of ["barragem", "piscinao"]) {
-    const code = await httpStatus(`/scada/${slug}`);
-    if (code !== 200) problems.push(`Página /scada/${slug} respondeu ${code || "sem resposta"}.`);
+    const r = await fetchJson(`/scada/${slug}`);
+    if (r.status !== 200) problems.push(`Página /scada/${slug} respondeu ${r.status || "sem resposta"}.`);
   }
 
-  // 2) Leitor AO VIVO do SmartLogger gravando? (só a Barragem tem o caminho direto)
-  if (process.env.DATABASE_URL) {
-    const u = new URL(process.env.DATABASE_URL);
-    const c = await mysql.createConnection({
-      host: u.hostname, port: Number(u.port) || 3306,
-      user: decodeURIComponent(u.username), password: decodeURIComponent(u.password),
-      database: u.pathname.slice(1),
-    });
-    try {
-      const [rows] = await c.query(
-        "SELECT readAt, ok FROM smartlogger_live WHERE siteId=2 ORDER BY readAt DESC LIMIT 1",
-      ) as [Array<{ readAt: Date; ok: number }>, unknown];
-      const last = rows[0];
-      if (!last) {
-        problems.push("SmartLogger ao vivo: nenhuma leitura gravada.");
-      } else {
-        const age = Date.now() - new Date(last.readAt).getTime();
-        if (age > SL_STALE_MS) problems.push(`SmartLogger ao vivo parado há ${Math.round(age / 60_000)}min (o leitor pode ter travado).`);
-      }
-    } finally {
-      await c.end();
-    }
+  // 2) Relé Waveshare — pela visão do serviço (não abre conexão nova no relé)
+  const wave = await liveFeed("liveWaveshare", "barragem");
+  if (wave === null) {
+    problems.push("Relé Waveshare: o serviço não está supervisionando (sem leitura).");
+  } else if (!wave.ok) {
+    problems.push("Relé Waveshare: última leitura do serviço com erro.");
+  } else if (wave.ageMs > STALE_MS) {
+    problems.push(`Relé Waveshare: leitura parada há ${Math.round(wave.ageMs / 60_000)}min (o leitor pode ter travado).`);
   }
 
-  // 3) Relé Waveshare alcançável? (read-only, Modbus TCP pela WireGuard)
-  const host = (process.env.WAVESHARE_HOSTS ?? "")
-    .split(",").map((s) => s.trim())
-    .find((s) => s.startsWith("barragem="))?.split("=")[1];
-  if (host) {
-    const reader = openRelayReader(host, { timeoutMs: 6000 });
-    try {
-      const snap = await readRelaySnapshot(reader, { unitId: 1 });
-      if (!snap.ok) problems.push(`Relé Waveshare sem resposta (${snap.err ?? "?"}).`);
-    } finally {
-      reader.close();
-    }
+  // 3) SmartLogger ao vivo (só a Barragem tem o caminho direto)
+  const sl = await liveFeed("liveSmartlogger", "barragem");
+  if (sl === null) {
+    problems.push("SmartLogger ao vivo (Barragem): o serviço não está lendo.");
+  } else if (!sl.ok) {
+    problems.push("SmartLogger ao vivo (Barragem): última leitura com erro.");
+  } else if (sl.ageMs > STALE_MS) {
+    problems.push(`SmartLogger ao vivo (Barragem): leitura parada há ${Math.round(sl.ageMs / 60_000)}min.`);
   }
 
   const stamp = new Date().toISOString();
