@@ -7,6 +7,8 @@ import { bessActions, bessConfig as bessConfigTable, bessState, bessReadings } f
 import { distributeRunningTime } from "./pump-stats-runtime";
 import { usersRouter, invitationsRouter, sitesRouter, whatsappRouter, systemAdminEndpoints } from "./admin-routes";
 import { triggerSitePoll } from "./poll-scheduler";
+import { getLiveSnapshot } from "./smartlogger-live";
+import { getRelayLive, hasWaveshareController } from "./waveshare-live";
 import {
   getDb,
   getAllSites,
@@ -48,6 +50,8 @@ import { generateSiteReport, generateAllReports, generateAndNotify, getScheduler
 export { sendMqttCommand } from "./mqtt-dispatch";
 import { sendMqttCommand } from "./mqtt-dispatch";
 import { telemetryRouter } from "./telemetry-api";
+import { cameraRouter } from "./camera-api";
+import { manualsRouter } from "./manuals-api";
 import {
   decideAutomacaoAlarm, decideBrokerAlarm,
   describeAutomacaoOffline, describeBrokerOffline,
@@ -541,6 +545,15 @@ async function sweepConnectivityAlarms() {
       const state = await getBessState(site.id);
       if (!state) continue;
 
+      // Site migrado para o relé Waveshare: o Sonoff foi aposentado. A supervisão
+      // do controlador passa a ser do sweep do Waveshare (RELE_OFFLINE). Aqui só
+      // garantimos que o AUTOMACAO_OFFLINE antigo (do Sonoff morto) fique fechado.
+      if (hasWaveshareController(site.slug)) {
+        if (state.sonoffOfflineSince) await upsertBessState(site.id, { sonoffOfflineSince: null });
+        await closeAlarmsByType(ALARM_TYPE_AUTOMACAO_OFFLINE, site.id);
+        continue;
+      }
+
       const action = decideAutomacaoAlarm({
         brokerConnected,
         automacaoOnline: state.sonoffOnline,
@@ -714,6 +727,34 @@ export const appRouter = router({
   }),
 
   bess: router({
+    // Leitura AO VIVO do SmartLogger (camada 1, direto da usina ~10s). Null se
+    // o coletor não estiver rodando ou o site não tiver SmartLogger configurado.
+    liveSmartlogger: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(({ input }) => {
+        const snap = getLiveSnapshot(input.slug);
+        if (!snap) return null;
+        return {
+          source: snap.source, ok: snap.ok, err: snap.err,
+          readAt: snap.readAt, ageMs: Date.now() - snap.readAt.getTime(),
+          ...snap.values,
+        };
+      }),
+    // Estado ao vivo do relé Waveshare (controlador da bomba). Só leitura. null = não supervisionado.
+    liveWaveshare: publicProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(({ input }) => {
+        const snap = getRelayLive(input.slug);
+        if (!snap) return null;
+        return {
+          ok: snap.ok, err: snap.err,
+          readAt: snap.readAt, ageMs: Date.now() - snap.readAt.getTime(),
+          pumpRelayClosed: snap.pumpRelayClosed,
+          contactorConfirmed: snap.contactorConfirmed,
+          relays: snap.relays,
+          protocolVersion: snap.protocolVersion,
+        };
+      }),
     // ── List all sites with summary status ──
     sites: publicProcedure.query(async () => {
       await ensureSeeded();
@@ -2022,6 +2063,9 @@ export const appRouter = router({
 
   // Telemetria completa por equipamento (somente leitura).
   telemetry: telemetryRouter,
+  camera: cameraRouter,
+  // Biblioteca de manuais + catálogo de falhas (falha → causa + solução).
+  manuals: manualsRouter,
 });
 
 export type AppRouter = typeof appRouter;

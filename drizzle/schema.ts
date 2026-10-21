@@ -329,3 +329,149 @@ export const telemetrySamples = mysqlTable("telemetry_samples", {
 
 export type TelemetrySample = typeof telemetrySamples.$inferSelect;
 export type InsertTelemetrySample = typeof telemetrySamples.$inferInsert;
+
+/**
+ * Câmeras das usinas (ONVIF + RTSP). Uma linha por câmera; o site pode ter
+ * zero ou mais. Credenciais ficam aqui e NUNCA saem pela API (ver
+ * camera-store.ts → publicCamera). `via*` é o caminho até a câmera quando a
+ * LAN da usina não é alcançável direto do servidor (túnel SSH/WireGuard).
+ */
+export const bessCameras = mysqlTable("bess_cameras", {
+  id: int("id").autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  name: varchar("name", { length: 128 }).notNull(),
+  model: varchar("model", { length: 64 }),
+  // Endereço real na LAN da usina
+  host: varchar("host", { length: 64 }).notNull(),
+  httpPort: int("httpPort").default(80).notNull(),
+  rtspPort: int("rtspPort").default(554).notNull(),
+  // Caminho alternativo (túnel) a partir do servidor; nulo = usa host direto
+  viaHost: varchar("viaHost", { length: 64 }),
+  viaHttpPort: int("viaHttpPort"),
+  viaRtspPort: int("viaRtspPort"),
+  username: varchar("username", { length: 64 }).default("admin").notNull(),
+  password: varchar("password", { length: 128 }).default("").notNull(),
+  // Caminhos RTSP (sem host nem credencial) e da foto nativa
+  streamMain: varchar("streamMain", { length: 128 }).default("/stream0").notNull(),
+  streamSub: varchar("streamSub", { length: 128 }).default("/stream1").notNull(),
+  snapshotPath: varchar("snapshotPath", { length: 160 }).default("/cgi-bin/snapshot.cgi?channel=1").notNull(),
+  // Tokens ONVIF (perfil de mídia e fonte de vídeo); nulos = descobrir
+  onvifProfile: varchar("onvifProfile", { length: 64 }),
+  onvifVideoSource: varchar("onvifVideoSource", { length: 64 }),
+  // Recursos descobertos (ptz, zoom, foco, limpador, lâmpada, áudio, presets…)
+  features: json("features"),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (t) => ({
+  bySite: index("bess_cameras_site").on(t.siteId),
+}));
+
+export type BessCamera = typeof bessCameras.$inferSelect;
+export type InsertBessCamera = typeof bessCameras.$inferInsert;
+
+/**
+ * Leitura AO VIVO do SmartLogger lida direto da usina (Modbus TCP pela rede
+ * privada). Camada SEPARADA do controle da bomba: o control-engine continua
+ * usando bess_state / bess_readings (ver CLAUDE.md §14). Esta tabela só
+ * ARMAZENA o que o leitor direto coleta — a tela lê daqui, nada escreve no
+ * controle a partir daqui.
+ *
+ * `source` registra qual camada serviu o valor (a escada: direto → nuvem →
+ * estimado), para quando a tela escolher a melhor fonte disponível. O leitor
+ * direto grava "direct"; `ok=false` + `err` marca uma falha de leitura (lacuna
+ * visível no histórico, como faz o coletor do Pi).
+ */
+export const smartloggerLive = mysqlTable("smartlogger_live", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  siteId: int("siteId").notNull(),
+  source: mysqlEnum("source", ["direct", "cloud", "estimated"]).default("direct").notNull(),
+  // Instante da leitura no equipamento; createdAt = instante em que gravamos.
+  readAt: timestamp("readAt").notNull(),
+  ok: boolean("ok").default(true).notNull(),
+  // Grandezas (convenção Huawei: essPowerKw positivo = DESCARGA; carga = potência total em ilha).
+  soc: float("soc"),
+  soh: float("soh"),
+  essPowerKw: float("essPowerKw"),
+  pvPowerKw: float("pvPowerKw"),
+  loadKw: float("loadKw"),
+  dischargeableKwh: float("dischargeableKwh"),
+  maxDischargeKw: float("maxDischargeKw"),
+  pcsRunning: int("pcsRunning"),
+  voltageAbV: float("voltageAbV"),
+  alarmSeq: int("alarmSeq"),
+  err: varchar("err", { length: 120 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (t) => ({
+  bySiteTime: index("smartlogger_live_site_time").on(t.siteId, t.createdAt),
+}));
+
+export type SmartloggerLive = typeof smartloggerLive.$inferSelect;
+export type InsertSmartloggerLive = typeof smartloggerLive.$inferInsert;
+
+/**
+ * Biblioteca de manuais dos equipamentos, guardados no servidor e servidos
+ * com login. Uma linha por documento (PDF/MD). O arquivo fica em
+ * storage-data/manuals/<filename>.
+ */
+export const equipmentManuals = mysqlTable("equipment_manuals", {
+  id: int("id").autoincrement().primaryKey(),
+  manufacturer: varchar("manufacturer", { length: 48 }).notNull(),
+  // inverter | smartlogger | battery | relay | plant | other
+  equipmentKind: varchar("equipmentKind", { length: 24 }).notNull(),
+  model: varchar("model", { length: 160 }),
+  title: varchar("title", { length: 255 }).notNull(),
+  // user_manual | alarm_reference | modbus_def | datasheet | quickguide | note
+  docType: varchar("docType", { length: 24 }).notNull(),
+  lang: varchar("lang", { length: 8 }).default("EN").notNull(),
+  issue: varchar("issue", { length: 64 }),
+  // Nome do arquivo guardado em storage-data/manuals/ (sem caminho).
+  filename: varchar("filename", { length: 255 }).notNull(),
+  mimeType: varchar("mimeType", { length: 64 }).default("application/pdf").notNull(),
+  sizeBytes: int("sizeBytes"),
+  pages: int("pages"),
+  source: varchar("source", { length: 255 }),
+  isActive: boolean("isActive").default(true).notNull(),
+  addedAt: timestamp("addedAt").defaultNow().notNull(),
+}, (t) => ({
+  byKind: index("equipment_manuals_kind").on(t.manufacturer, t.equipmentKind),
+}));
+
+export type EquipmentManual = typeof equipmentManuals.$inferSelect;
+export type InsertEquipmentManual = typeof equipmentManuals.$inferInsert;
+
+/**
+ * Catálogo de falhas por equipamento, transcrito dos manuais. É a fonte do
+ * "interpretar a falha e mostrar a solução": quando um equipamento acusa uma
+ * falha (Alarm ID da FusionSolar, ou alarme do SmartLogger por bit), casamos
+ * aqui pelo (manufacturer, code[, subId]) e exibimos causa + ação.
+ *
+ * `code` = Alarm ID numérico (o mesmo que a API Northbound devolve; para o
+ * SmartLogger, o alarmId da Tabela 2-2). `subId` = causeId/subId quando o
+ * manual diferencia por causa (null = linha única).
+ */
+export const faultCatalog = mysqlTable("fault_catalog", {
+  id: int("id").autoincrement().primaryKey(),
+  manufacturer: varchar("manufacturer", { length: 48 }).notNull(),
+  // inverter | smartlogger | battery | relay
+  equipmentKind: varchar("equipmentKind", { length: 24 }).notNull(),
+  family: varchar("family", { length: 200 }),
+  modelsCovered: text("modelsCovered"),
+  code: int("code").notNull(),
+  subId: int("subId"),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  cause: text("cause"),
+  action: text("action"),
+  // critical | major | minor | warning
+  severity: varchar("severity", { length: 16 }),
+  sourcePdf: varchar("sourcePdf", { length: 255 }),
+  page: varchar("page", { length: 16 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (t) => ({
+  byCode: index("fault_catalog_code").on(t.manufacturer, t.code),
+  byKind: index("fault_catalog_kind").on(t.equipmentKind),
+}));
+
+export type FaultCatalogEntry = typeof faultCatalog.$inferSelect;
+export type InsertFaultCatalogEntry = typeof faultCatalog.$inferInsert;

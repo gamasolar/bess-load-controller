@@ -301,6 +301,8 @@ Ou seja:
 - **MGCC Enable → sem Modbus TCP para o Pi/dashboard.** A FusionSolar (NMS Huawei) continua funcionando.
 - O **botão físico BLACK START** do 215-2S10 (o que Fernando apertou em 18/09) existe independente do MGCC.
 
+**Resposta (visita de 17/10/2026):** `MGCC Mode = Enable`, `Microgrid scenario = Off-grid` (só editável no Deployment Wizard). O Modbus TCP foi habilitado mesmo assim (`Enable(Unlimited)`, Logical address, porta 502) e **respondeu**: `40515` = 82,0 %, `40392` = 51 061 W, lido pelo túnel às 16:45. A tela avisa que forçar os dois "pode deixar a microrrede instável". **Decisão do operador (17/10): manter os dois ligados, uso só de leitura, 14 dias de observação**; qualquer sinal de instabilidade do logger (alarmes, quedas de comunicação) → desligar o Modbus TCP na hora. A tela `Microgrid Control → General Configuration` também mostra um **Load Switch** nativo (status DI1 = Open, desliga DO1, liga DO2, "Current Status: Close") — perguntar à HDT se está cabeado; é candidato a explicar por que o auto black start nunca disparou.
+
 **Pergunta aberta para o operador (decide o desenho):** no WebUI do SmartLogger da Barragem, `Settings > Microgrid`: **MGCC Mode está Enable ou Disable?**
 
 | Se MGCC está… | Caminho 2 fica… |

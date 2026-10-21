@@ -69,6 +69,53 @@ function escapeMarkdown(text: string): string {
   return text.replace(/([_*\[\]()`])/g, "\\$1");
 }
 
+/**
+ * WhatsApp pelo gateway interno (relay da Evolution API, o mesmo que o Helios
+ * e o Gama 360 usam). Configure com:
+ *   WHATSAPP_RELAY_URL=http://127.0.0.1:8099
+ *   WHATSAPP_RELAY_KEY=<chave do relay>
+ *   WHATSAPP_TO=55DDDNNNNNNNNN   (ou um id de grupo ...@g.us)
+ * Sem as três variáveis é no-op, como o Telegram.
+ */
+function whatsappConfig(): { url: string; key: string; to: string } | null {
+  const url = (process.env.WHATSAPP_RELAY_URL ?? "").trim().replace(/\/+$/, "");
+  const key = (process.env.WHATSAPP_RELAY_KEY ?? "").trim();
+  const to = (process.env.WHATSAPP_TO ?? "").trim();
+  if (!url || !key || !to) return null;
+  return { url, key, to };
+}
+
+export function isWhatsAppConfigured(): boolean {
+  return whatsappConfig() !== null;
+}
+
+async function sendWhatsApp(title: string, content: string): Promise<boolean> {
+  const cfg = whatsappConfig();
+  if (!cfg) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    // O relay substitui o nome da instância pelo da que estiver conectada.
+    const response = await fetch(`${cfg.url}/message/sendText/bess`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: cfg.key },
+      body: JSON.stringify({ number: cfg.to, text: `*${title}*\n\n${content}` }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.warn(`[Notification] WhatsApp returned ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn("[Notification] WhatsApp request failed:", error instanceof Error ? error.message : error);
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function notifyOwner(
   payload: NotificationPayload,
 ): Promise<boolean> {
@@ -76,15 +123,22 @@ export async function notifyOwner(
 
   const token = (process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
   const chatId = (process.env.TELEGRAM_CHAT_ID ?? "").trim();
+  const telegramConfigured = !!token && !!chatId;
 
-  if (!token || !chatId) {
-    // Notifications are an optional dependency for the BESS dashboard.
-    // We log once-per-call at warn level but do not throw so callers (alarms,
-    // reports) keep working in environments without Telegram set up.
-    console.warn(
-      "[Notification] Skipping notifyOwner: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured.",
-    );
-    return false;
+  // Canais são independentes: manda em todos os configurados e responde
+  // `true` se pelo menos um entregou.
+  const whatsappOk = await sendWhatsApp(title, content);
+
+  if (!telegramConfigured) {
+    if (!isWhatsAppConfigured()) {
+      // Notifications are an optional dependency for the BESS dashboard.
+      // We log once-per-call at warn level but do not throw so callers (alarms,
+      // reports) keep working in environments without any channel set up.
+      console.warn(
+        "[Notification] Skipping notifyOwner: nenhum canal configurado (Telegram ou WhatsApp).",
+      );
+    }
+    return whatsappOk;
   }
 
   const text = `*${escapeMarkdown(title)}*\n\n${escapeMarkdown(content)}`;
@@ -115,12 +169,12 @@ export async function notifyOwner(
           detail ? `: ${detail}` : ""
         }`,
       );
-      return false;
+      return whatsappOk;
     }
     return true;
   } catch (error) {
     console.warn("[Notification] Telegram request failed:", error);
-    return false;
+    return whatsappOk;
   } finally {
     clearTimeout(timeout);
   }

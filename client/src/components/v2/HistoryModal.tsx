@@ -53,14 +53,8 @@ function dayStart(v: string): number | undefined {
   return v ? new Date(`${v}T00:00:00`).getTime() : undefined;
 }
 
-export function HistoryModal({
-  open, onOpenChange, slug, siteName,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  slug: string;
-  siteName: string;
-}) {
+/** Conteúdo do histórico (filtros + lista), reutilizável dentro do modal ou embutido numa aba (ex.: SCADA). */
+export function HistoryPanel({ slug, active = true }: { slug: string; active?: boolean }) {
   const [period, setPeriod] = useState<PeriodId>("7d");
   const [kind, setKind] = useState<KindId>("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -68,7 +62,7 @@ export function HistoryModal({
   const [limit, setLimit] = useState(PAGE);
   // "agora" fixo enquanto o modal está aberto, para a consulta não mudar a cada render
   const [anchor, setAnchor] = useState(() => Date.now());
-  useEffect(() => { if (open) { setAnchor(Date.now()); setLimit(PAGE); } }, [open, period, kind, dateFrom, dateTo]);
+  useEffect(() => { if (active) { setAnchor(Date.now()); setLimit(PAGE); } }, [active, period, kind, dateFrom, dateTo]);
 
   const range = useMemo(() => {
     if (period === "custom") {
@@ -86,19 +80,13 @@ export function HistoryModal({
       sources: k.sources ? [...k.sources] : undefined,
       actions: k.actions ? [...k.actions] : undefined,
     },
-    { enabled: open, refetchInterval: open && period === "24h" ? 30_000 : false, placeholderData: (prev) => prev },
+    { enabled: active, refetchInterval: active && period === "24h" ? 30_000 : false, placeholderData: (prev) => prev },
   );
   const count = data?.length ?? 0;
   const truncated = count >= limit;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Histórico de ações — {siteName}</DialogTitle>
-          <DialogDescription>Comandos, mudanças de modo e de configuração registrados para esta planta.</DialogDescription>
-        </DialogHeader>
-
+    <>
         <div className="space-y-2">
           <div className="flex flex-wrap gap-1.5">
             {PERIODS.map((p) => (
@@ -161,6 +149,26 @@ export function HistoryModal({
             <p className="text-xs text-muted-foreground text-center">Limite de {MAX} ações por consulta. Reduza o período ou filtre o tipo para ver as mais antigas.</p>
           )}
         </div>
+    </>
+  );
+}
+
+export function HistoryModal({
+  open, onOpenChange, slug, siteName,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  slug: string;
+  siteName: string;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Histórico de ações — {siteName}</DialogTitle>
+          <DialogDescription>Comandos, mudanças de modo e de configuração registrados para esta planta.</DialogDescription>
+        </DialogHeader>
+        <HistoryPanel slug={slug} active={open} />
       </DialogContent>
     </Dialog>
   );

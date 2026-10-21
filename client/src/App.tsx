@@ -9,6 +9,8 @@ import AcceptInvitation from "@/pages/AcceptInvitation";
 import Tablet from "@/pages/Tablet";
 import Plant from "@/pages/Plant";
 import Scada from "@/pages/Scada";
+import Cameras from "@/pages/Cameras";
+import CameraView from "@/pages/CameraView";
 
 export default function App() {
   const [location] = useLocation();
@@ -57,6 +59,8 @@ export default function App() {
           <Route path="/" component={Home} />
           <Route path="/configuracoes" component={Settings} />
           <Route path="/planta/:slug" component={Plant} />
+          <Route path="/cameras" component={Cameras} />
+          <Route path="/cameras/:id" component={CameraView} />
           <Route path="/convite/:token" component={AcceptInvitation} />
           <Route>
             <div className="flex items-center justify-center h-full">

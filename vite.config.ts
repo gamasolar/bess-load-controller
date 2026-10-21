@@ -34,10 +34,25 @@ export default defineConfig({
         ],
       },
       workbox: {
+        cleanupOutdatedCaches: true, // remove precaches de versões antigas ao ativar a nova
         navigateFallback: "/index.html",
+        // O fallback de navegação (servir /index.html) NUNCA pode pegar as rotas
+        // de backend: abrir um PDF de manual ou um arquivo em nova aba é uma
+        // navegação, e sem esta lista o service worker devolvia a casca do app
+        // no lugar do arquivo ("manual não abre").
+        navigateFallbackDenylist: [/^\/api\//, /^\/storage\//],
         runtimeCaching: [
           {
-            urlPattern: ({ request }) => request.mode === "navigate",
+            // Arquivos binários autenticados (PDF de manual, foto/quadro da
+            // câmera, proxy go2rtc): direto da rede, sem cache e SEM timeout.
+            // O timeout de 5s do /api/ derrubava o snapshot da câmera quando a
+            // Starlink passava de 5s ("câmera não aparece").
+            urlPattern: /\/api\/(manuals|camera|storage)\//,
+            handler: "NetworkOnly",
+          },
+          {
+            urlPattern: ({ request, url }) =>
+              request.mode === "navigate" && !url.pathname.startsWith("/api/"),
             handler: "NetworkFirst",
             options: {
               cacheName: "html-cache",

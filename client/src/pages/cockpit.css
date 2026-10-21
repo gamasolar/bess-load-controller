@@ -1,0 +1,61 @@
+/*
+ * Cockpit — acréscimos ao front beta (Scada): abas Câmeras e Manuais, solução
+ * nos alarmes e o painel de leitura ao vivo (direto do SmartLogger). Mesmo
+ * vocabulário visual do scada-base.css (vidro escuro, ciano/âmbar).
+ */
+
+/* ── Alarmes com causa + solução ───────────────────────────────── */
+.scada .ck-alarm { align-items: flex-start; min-height: 0; padding: 12px 14px 12px 18px; }
+.scada .ck-alarm .alarm-text { display: block; }
+.scada .ck-alarm-title { font-size: 15px; color: #eaf6ff; margin: 2px 0 6px; line-height: 1.3; }
+.scada .ck-solucao { font-size: 13px; line-height: 1.55; color: #cfe1ee; }
+.scada .ck-solucao p { margin: 6px 0; }
+.scada .ck-solucao b { color: #9fe3dc; font-weight: 600; }
+.scada .ck-steps { margin: 8px 0; padding: 10px 13px; border: 1px solid #244a3f; border-left: 3px solid #43d6a7;
+  border-radius: 8px; background: #08201ab0; }
+.scada .ck-steps p { margin: 6px 0 0; max-height: 220px; overflow: auto; white-space: pre-line; }
+.scada .ck-pending { color: #e4c489; font-size: 12px; }
+.scada .ck-nomanual { color: #a9c0d0; font-size: 13px; line-height: 1.5; }
+.scada .ck-manual-ref { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid #1d3744; font-size: 11px; color: #88a7bb; }
+.scada .ck-manual-ref button { border: 1px solid #2f5266; border-radius: 7px; padding: 6px 11px; font-size: 12px;
+  color: #cfeefc; background: #0c2432; white-space: nowrap; }
+
+/* ── Câmeras ───────────────────────────────────────────────────── */
+.scada .ck-cam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 6px; }
+.scada .ck-cam-card { display: block; padding: 0; text-align: left; border: 1px solid #27414f; border-radius: 12px;
+  overflow: hidden; background: #0a1c28; box-shadow: 0 6px 22px #0004; }
+.scada .ck-cam-card:hover { border-color: #4aa6cc; filter: none; }
+.scada .ck-cam-card img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #061018;
+  border-bottom: 1px solid #1c3745; }
+.scada .ck-cam-name { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 14px; }
+.scada .ck-cam-name strong { font-size: 15px; color: #eaf6ff; }
+.scada .ck-cam-name small { font-size: 12px; color: #6fd0ec; white-space: nowrap; }
+
+/* ── Manuais ───────────────────────────────────────────────────── */
+.scada .ck-manuais { display: flex; flex-direction: column; gap: 22px; margin-top: 6px; }
+.scada .ck-man-group h3 { font-size: 13px; letter-spacing: 1.4px; text-transform: uppercase; color: #86cfe6;
+  margin: 0 0 9px; font-weight: 600; }
+.scada .ck-man-row { display: flex; align-items: center; gap: 14px; padding: 13px 16px; margin-bottom: 8px;
+  border: 1px solid #253f4d; border-radius: 10px; background: #0a1e2b; text-decoration: none; color: inherit; }
+.scada .ck-man-row:hover { border-color: #4aa6cc; background: #0e2838; }
+.scada .ck-man-ic { font-size: 24px; color: #8fb6cc; flex-shrink: 0; }
+.scada .ck-man-meta { flex: 1; min-width: 0; }
+.scada .ck-man-meta strong { font-size: 15px; color: #eaf6ff; white-space: normal; }
+.scada .ck-man-meta small { font-size: 12px; color: #8fa9bb; margin-top: 2px; }
+.scada .ck-man-open { font-size: 13px; color: #6fd0ec; white-space: nowrap; flex-shrink: 0; }
+
+/* ── Chip "ao vivo · direto" no painel de SOC (leitura direta 10 s) ─── */
+.scada .ck-soc-live { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; font-size: 10px;
+  font-weight: 600; letter-spacing: .3px; color: #40dca0; vertical-align: middle;
+  border: 1px solid #1c5f49; border-radius: 20px; padding: 2px 9px; background: #0a2b22;
+  text-shadow: 0 0 10px #40dca055; }
+
+/* ── Eventos (histórico de ações) embutido, no formato das outras abas ── */
+.scada .ck-eventos { padding: 18px 20px; }
+.scada .ck-eventos .space-y-2 + .space-y-2 { margin-top: 14px; }
+
+@media (max-width: 899px) {
+  .scada .ck-cam-grid { grid-template-columns: 1fr; }
+  .scada .ck-eventos { padding: 14px; }
+}

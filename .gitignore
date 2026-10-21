@@ -119,3 +119,7 @@ storage-data/
 # Dumps de banco (backups pré-migração/rename) — nunca versionar
 *.sql.gz
 backup-*.sql
+
+# Binário do go2rtc (copiado do contêiner do Frigate); não versionar
+tools/go2rtc
+tools/ffmpeg

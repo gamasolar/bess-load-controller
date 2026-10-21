@@ -26,6 +26,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   LayoutDashboard,
   LogOut,
+  Video,
   PanelLeft,
   Zap,
   Battery,
@@ -38,6 +39,7 @@ import { Button } from "./ui/button";
 
 const baseMenu = [
   { icon: LayoutDashboard, label: "Visão Geral", path: "/" },
+  { icon: Video, label: "Câmeras", path: "/cameras" },
 ];
 const adminMenu = [
   { icon: Settings, label: "Configurações", path: "/configuracoes" },
@@ -148,7 +150,7 @@ function DashboardLayoutContent({
   const { data: plantSites } = trpc.bess.sites.useQuery(undefined, { staleTime: 5 * 60_000 });
   const plantMenu = (plantSites ?? []).map((s) => ({ icon: Battery, label: s.name, path: `/planta/${s.slug}` }));
   const menuItems = isAdmin ? [...baseMenu, ...plantMenu, ...adminMenu] : [...baseMenu, ...plantMenu];
-  const activeMenuItem = menuItems.find((item) => item.path === location);
+  const activeMenuItem = menuItems.find((item) => item.path === location) ?? (location.startsWith("/cameras") ? menuItems.find((item) => item.path === "/cameras") : undefined);
   const isMobile = useIsMobile();
 
   useEffect(() => {

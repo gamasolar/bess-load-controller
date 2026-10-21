@@ -169,6 +169,37 @@ export class ModbusTcpReader {
     });
   }
 
+  /**
+   * FC 0x01 Read Coils — estado das bobinas (saídas/relés). Só leitura.
+   * Devolve os bytes de bitfield (1 bit por coil, LSB = primeira coil); o chamador decodifica.
+   */
+  readCoils(unitId: number, address: number, quantity: number): Promise<Buffer> {
+    return this.readBits(0x01, unitId, address, quantity);
+  }
+
+  /**
+   * FC 0x02 Read Discrete Inputs — entradas digitais (ex.: retorno do contator). Só leitura.
+   * Mesmo formato de bitfield do FC01.
+   */
+  readDiscreteInputs(unitId: number, address: number, quantity: number): Promise<Buffer> {
+    return this.readBits(0x02, unitId, address, quantity);
+  }
+
+  /** FC01/FC02 compartilham o mesmo formato de requisição (addr+qty) e resposta (byteCount+bits). */
+  private readBits(fc: number, unitId: number, address: number, quantity: number): Promise<Buffer> {
+    const pdu = Buffer.from([fc, (address >> 8) & 0xff, address & 0xff, (quantity >> 8) & 0xff, quantity & 0xff]);
+    return this.enqueue(async () => {
+      const res = await this.exchange(unitId, pdu);
+      if (res[0] !== fc) throw new ModbusProtocolError(`Função inesperada na resposta: 0x${res[0].toString(16)}`);
+      const byteCount = res[1];
+      const expected = Math.ceil(quantity / 8);
+      if (byteCount !== expected || res.length < 2 + byteCount) {
+        throw new ModbusProtocolError(`Esperava ${expected} byte(s) de bits, vieram ${byteCount} (${res.length - 2} no quadro)`);
+      }
+      return Buffer.from(res.subarray(2, 2 + byteCount));
+    });
+  }
+
   /** FC 0x2B / MEI 0x0E. `readCode` 1 = identificação básica; 3 = lista de dispositivos (objeto 0x87+). */
   readDeviceIdentification(unitId: number, readCode: number, objectId: number): Promise<DeviceIdResponse> {
     const pdu = Buffer.from([0x2b, 0x0e, readCode & 0xff, objectId & 0xff]);

@@ -19,16 +19,65 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ConfigModalV2 } from "@/components/v2/ConfigModalV2";
-import { HistoryModal } from "@/components/v2/HistoryModal";
+import { HistoryModal, HistoryPanel } from "@/components/v2/HistoryModal";
 import { PumpStatsModal } from "@/components/v2/PumpStatsModal";
 import { DecisionPanel } from "@/components/v2/DecisionPanel";
 import { AllReadings, History, Inverter, ago, deviceTitle, num, pointValue, sentence, type Device } from "./Plant";
 import "./plant.css";
 import "./scada-base.css";
 import "./scada.css";
+import "./cockpit.css";
 
-type View = "Visão Geral" | "Tendências" | "Equipamentos" | "Alarmes";
-const VIEWS: View[] = ["Visão Geral", "Tendências", "Equipamentos", "Alarmes"];
+type View = "Visão Geral" | "Tendências" | "Equipamentos" | "Eventos" | "Alarmes" | "Câmeras" | "Manuais";
+const VIEWS: View[] = ["Visão Geral", "Tendências", "Equipamentos", "Eventos", "Alarmes", "Câmeras", "Manuais"];
+
+// Agrupamento da biblioteca de manuais por tipo de equipamento.
+const MANUAL_KINDS: Array<{ kind: string; label: string }> = [
+  { kind: "inverter", label: "Inversores" },
+  { kind: "battery", label: "Bateria (BESS)" },
+  { kind: "smartlogger", label: "SmartLogger / Datalogger" },
+  { kind: "relay", label: "Automação / Contator" },
+  { kind: "plant", label: "Planta" },
+  { kind: "other", label: "Outros" },
+];
+
+const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n).trimEnd() + "…" : s);
+
+// Ícones (SVG inline, herdam a cor do contêiner). Substituem os glifos genéricos.
+function IconSun({ size = 26 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2.6M12 19.4V22M22 12h-2.6M4.6 12H2M19.07 4.93l-1.84 1.84M6.77 17.23l-1.84 1.84M19.07 19.07l-1.84-1.84M6.77 6.77 4.93 4.93" />
+    </svg>
+  );
+}
+function IconBattery({ size = 26 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.5" y="6.5" width="16" height="11" rx="2.4" />
+      <path d="M21.5 10v4" />
+      <path d="M11 8.7 8.6 12.3H11l-.6 2.8L13.3 11.3H11z" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+function IconPlug({ size = 26 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 2v5M15 2v5" />
+      <path d="M6 7h12v3a6 6 0 0 1-12 0z" />
+      <path d="M12 16v6" />
+    </svg>
+  );
+}
+function IconInverter({ size = 26 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2.4" />
+      <path d="M6.5 14c1.2 0 1.2-4 2.4-4s1.2 4 2.4 4 1.2-4 2.4-4 1.2 4 2.4 4" />
+    </svg>
+  );
+}
 const W = 1672;
 const H = 941;
 const FLOW_MIN = 0.3;
@@ -101,6 +150,16 @@ export default function Scada() {
   const cycles = trpc.telemetry.cycles.useQuery({ slug }, { staleTime: 10 * 60_000 }).data;
   // A água do Piscinão depende da bomba da BARRAGEM estar confirmadamente operando.
   const barragem = trpc.bess.getSiteStatus.useQuery({ slug: "barragem" }, { enabled: slug === "piscinao", refetchInterval: 30_000 }).data;
+  // Câmeras da planta, biblioteca de manuais e alarmes já interpretados pelo manual (causa + solução).
+  const cams = trpc.camera.list.useQuery(undefined, { refetchInterval: 60_000 }).data ?? [];
+  const siteCams = cams.find((x) => x.slug === slug)?.cameras ?? [];
+  const manuals = trpc.manuals.list.useQuery(undefined, { staleTime: 10 * 60_000 }).data ?? [];
+  const siteId = sites.find((x) => x.slug === slug)?.id;
+  const diag = trpc.manuals.siteAlarms.useQuery({ siteId: siteId ?? 0 }, { enabled: siteId != null, refetchInterval: 60_000 }).data ?? [];
+  // Leitura AO VIVO direta do SmartLogger (10 s). Fonte mais fresca que a nuvem (15 min).
+  const liveSL = trpc.bess.liveSmartlogger.useQuery({ slug }, { refetchInterval: 10_000, retry: false }).data;
+  // Estado ao vivo do relé Waveshare (controlador da bomba). null = planta sem relé supervisionado.
+  const liveWave = trpc.bess.liveWaveshare.useQuery({ slug }, { refetchInterval: 10_000, retry: false }).data;
 
   const [view, setView] = useState<View>("Visão Geral");
   const [pumpOpen, setPumpOpen] = useState(false);
@@ -172,6 +231,9 @@ export default function Scada() {
   const stale = age != null && age > STALE_SECONDS;
   const noData = !s || s.state.lastTelemetryAt == null || age == null || s.derived.soc == null;
   const live = !noData && !stale;
+  const slLive = !!liveSL && liveSL.ok && liveSL.ageMs < 30_000;
+  const slAge = liveSL ? Math.round(liveSL.ageMs / 1000) : null;
+  const slAutonomy = slLive && liveSL && liveSL.dischargeableKwh != null ? liveSL.dischargeableKwh : null;
   const soc = s?.derived.soc ?? null;
   const battery = live ? held?.battery ?? s?.state.currentBatteryPower ?? null : null;
   const pv = live ? held?.pv ?? s?.state.currentPvPower ?? null : null;
@@ -189,8 +251,18 @@ export default function Scada() {
   };
 
   const health = HEALTH_TEXT[(s?.derived as { loadHealth?: string } | undefined)?.loadHealth ?? "UNKNOWN"] ?? HEALTH_TEXT.UNKNOWN;
-  const automationOnline = !!s?.state.sonoffOnline && !!s?.state.mqttConnected;
-  const hasAutomation = !!s?.site.mqttTopic;
+  // Controlador da bomba. Se a planta tem relé Waveshare supervisionado, ele é a
+  // verdade; senão cai no legado Sonoff/MQTT. Fase 1: o dashboard só LÊ o Waveshare —
+  // quem comanda é o Pi na planta. Comando pelo dashboard (via Sonoff) segue só onde
+  // ainda existe Sonoff; no Waveshare, comandar é Fase 2.
+  const hasWave = !!liveWave;
+  const waveOk = hasWave && !!liveWave!.ok && liveWave!.ageMs < 30_000;
+  const relayClosed = hasWave ? liveWave!.pumpRelayClosed : null;
+  const contactorConfirmed = hasWave ? liveWave!.contactorConfirmed : null;
+  const sonoffOnline = !!s?.state.sonoffOnline && !!s?.state.mqttConnected;
+  const automationOnline = hasWave ? waveOk : sonoffOnline;  // "controlador online" (exibição)
+  const hasAutomation = hasWave || !!s?.site.mqttTopic;
+  const canCommand = !hasWave && sonoffOnline;               // dashboard só comanda pela via legada
 
   const critical = alarms.filter((a) => a.severity === "CRITICAL").length;
   const level = critical > 0 ? "critical" : alarms.length > 0 || stale || noData ? "warning" : "normal";
@@ -242,7 +314,6 @@ export default function Scada() {
         </div>
         <nav>
           {VIEWS.map((v) => <button key={v} type="button" className={view === v ? "active" : undefined} onClick={() => setView(v)}>{v}</button>)}
-          <button type="button" onClick={() => setHistoryOpen(true)}>Eventos</button>
 
         </nav>
         <div className="topcard weather">
@@ -408,7 +479,7 @@ export default function Scada() {
 
       <section className="metrics">
         <article className="glass soc">
-          <h2>Estado de Carga (SOC)</h2>
+          <h2>Estado de Carga (SOC){slLive && <span className="ck-soc-live">● ao vivo · direto {slAge}s</span>}</h2>
           <div className="soc-content">
             <div className="gauge">
               <svg viewBox="0 0 160 160"><circle cx="80" cy="80" r="64" fill="none" stroke="#102633" strokeWidth="14" />
@@ -417,22 +488,22 @@ export default function Scada() {
               <div><strong>{soc == null ? "--" : `${num(soc, 0)}%`}</strong><span className={s && soc != null && soc <= s.config.socMinDesliga ? "red" : undefined}>{soc == null ? "Sem leitura" : estimated ? "Estimado" : s && soc <= s.config.socMinDesliga ? "Baixo" : stale ? "Desatualizado" : "Normal"}</span></div>
             </div>
             <dl>
-              <div><dt>Energia disponível (est.)</dt><dd>{soc == null ? "-- kWh" : `${num((soc / 100) * usableKwh, 0)} kWh`}</dd></div>
+              <div><dt>{slAutonomy != null ? "Autonomia (medida)" : "Energia disponível (est.)"}</dt><dd>{slAutonomy != null ? `${num(slAutonomy, 0)} kWh` : soc == null ? "-- kWh" : `${num((soc / 100) * usableKwh, 0)} kWh`}</dd></div>
               <div><dt>Blackout / desliga / religa</dt><dd>{s ? `${s.config.socBlackout}% / ${s.config.socMinDesliga}% / ${s.config.socMinReliga}%` : "--"}</dd></div>
               <div><dt>Ciclos da bateria (est.)</dt><dd>{cycles?.since ? `${num(cycles.cycles, 0)} / ${num(cycles.warrantyCycles, 0)}` : "--"}</dd></div>
             </dl>
           </div>
         </article>
-        <article className="glass metric"><h2><span className="yellow">☀</span> Geração Solar</h2><strong>{reading(pv)} kW</strong><small>{live ? (sunOn ? "Gerando" : "Sem geração") : "Sem leitura"}</small><div className="chart"><Spark values={ordered.map((r) => r.pvPower)} color="#f3bc52" zero /></div></article>
-        <article className="glass metric"><h2><span className="yellow">ϟ</span> Potência da Bateria</h2><strong>{reading(battery)} kW</strong><small>{live ? (charging ? "Carregando" : discharging ? "Descarregando" : "Em espera") : "Sem leitura"}</small><div className="chart"><Spark values={ordered.map((r) => r.batteryPower)} color="#56d4ea" zero /></div></article>
-        <article className="glass metric"><h2><span>◆</span> Consumo / Cargas</h2><strong>{reading(load)} kW</strong><small>{live ? "Calculado: solar menos bateria" : "Sem leitura"}</small><div className="chart"><Spark values={ordered.map((r) => r.loadPower)} color="#7f9cff" zero /></div></article>
+        <article className="glass metric"><h2><span className="yellow"><IconSun size={28} /></span> Geração Solar</h2><strong>{reading(pv)} kW</strong><small>{live ? (sunOn ? "Gerando" : "Sem geração") : "Sem leitura"}</small><div className="chart"><Spark values={ordered.map((r) => r.pvPower)} color="#f3bc52" zero /></div></article>
+        <article className="glass metric"><h2><span style={{ color: "#56d4ea" }}><IconBattery size={28} /></span> Potência da Bateria</h2><strong>{reading(battery)} kW</strong><small>{live ? (charging ? "Carregando" : discharging ? "Descarregando" : "Em espera") : "Sem leitura"}</small><div className="chart"><Spark values={ordered.map((r) => r.batteryPower)} color="#56d4ea" zero /></div></article>
+        <article className="glass metric"><h2><span style={{ color: "#7f9cff" }}><IconPlug size={26} /></span> Consumo / Cargas</h2><strong>{reading(load)} kW</strong><small>{live ? "Calculado: solar menos bateria" : "Sem leitura"}</small><div className="chart"><Spark values={ordered.map((r) => r.loadPower)} color="#7f9cff" zero /></div></article>
       </section>
 
       <footer>
         <div className="status-title"><i data-level={level} />Status dos Equipamentos</div>
         <div className="glass device-strip">
-          {batteries.map((d) => <div key={d.id} className="device"><span>▥</span><div><small>{titles.get(d.id)}</small><strong>{reading(pointValue(d, "battery_soc"), 0)}%</strong><small>{ago(d.ageSeconds)}</small></div></div>)}
-          {inverters.map((d) => <div key={d.id} className="device"><span>▥</span><div><small>{titles.get(d.id)}</small><strong className={/falha|parado/i.test(d.summary.status ?? "") ? "red" : undefined}>{reading(pointValue(d, "active_power"))} kW</strong><small>{(d.summary.status ?? "sem estado").slice(0, 26)}</small></div></div>)}
+          {batteries.map((d) => <div key={d.id} className="device"><span><IconBattery size={24} /></span><div><small>{titles.get(d.id)}</small><strong>{reading(pointValue(d, "battery_soc"), 0)}%</strong><small>{ago(d.ageSeconds)}</small></div></div>)}
+          {inverters.map((d) => <div key={d.id} className="device"><span><IconInverter size={24} /></span><div><small>{titles.get(d.id)}</small><strong className={/falha|parado/i.test(d.summary.status ?? "") ? "red" : undefined}>{reading(pointValue(d, "active_power"))} kW</strong><small>{(d.summary.status ?? "sem estado").slice(0, 26)}</small></div></div>)}
           <div className="device"><span>☁</span><div><small>FusionSolar</small><strong className={live ? "sc-green" : "red"}>{live ? "Online" : "Sem leitura"}</strong><small>{ago(age)}</small></div></div>
           <div className="device"><span>▥</span><div><small>Automação</small><strong className={!hasAutomation ? undefined : automationOnline ? "sc-green" : "red"}>{!hasAutomation ? "Não instalada" : automationOnline ? "Online" : "Offline"}</strong><small>{hasAutomation ? (s?.config.controlMode === "AUTO" ? "Automático" : "Manual") : "—"}</small></div></div>
         </div>
@@ -452,6 +523,7 @@ export default function Scada() {
           </div>
           <div id="workspace-body" className="plant plant--embed">
             {view === "Tendências" && (devices.length ? <div className="glass sc-panel"><History devices={devices} titles={titles} /></div> : <p className="sc-empty">Sem equipamentos com histórico.</p>)}
+            {view === "Eventos" && <div className="glass sc-panel ck-eventos"><HistoryPanel slug={slug} active={view === "Eventos"} /></div>}
             {view === "Equipamentos" && (
               <>
                 {inverters.length > 1 && (
@@ -464,13 +536,58 @@ export default function Scada() {
                 {devices.length ? <div className="glass sc-panel"><AllReadings devices={devices} titles={titles} /></div> : <p className="sc-empty">Nenhum equipamento enviou leitura ainda.</p>}
               </>
             )}
-            {view === "Alarmes" && (alarms.length === 0 ? <p className="sc-empty">Nenhum alarme ativo nesta planta.</p> : alarms.map((a) => (
-              <div key={a.id} className={`alarm-row${a.severity === "CRITICAL" ? " urgent" : ""}`}>
+            {view === "Alarmes" && (diag.length === 0 ? <p className="sc-empty">Nenhum alarme ativo nesta planta.</p> : diag.map((a) => (
+              <div key={a.id} className={`alarm-row ck-alarm${a.severity === "CRITICAL" ? " urgent" : ""}`}>
                 <span className="alert-icon">!</span>
-                <span className="alarm-text"><span className="badge">{a.severity === "CRITICAL" ? "Crítico" : a.severity === "WARNING" ? "Alarme" : "Aviso"}</span>{a.description}
-                  <small>Aberto {ago(Math.round((now.getTime() - new Date(a.openedAt).getTime()) / 1000))} · {new Date(a.openedAt).toLocaleString("pt-BR")}</small></span>
+                <div className="alarm-text">
+                  <span className="badge">{a.severity === "CRITICAL" ? "Crítico" : a.severity === "WARNING" ? "Alarme" : "Aviso"}</span>
+                  <strong className="ck-alarm-title">{a.fault?.name ?? a.description}</strong>
+                  {a.fault ? (
+                    <div className="ck-solucao">
+                      {a.fault.cause && <p><b>Causa provável:</b> {clamp(a.fault.cause, 360)}</p>}
+                      {a.fault.action
+                        ? <div className="ck-steps"><b>O que fazer (conforme o manual):</b><p>{a.fault.action}</p></div>
+                        : <p className="ck-pending">Solução ainda não transcrita do manual deste equipamento.</p>}
+                      <div className="ck-manual-ref">
+                        <span>Manual: {a.fault.manufacturer} · {a.fault.family ?? a.fault.equipmentKind}{a.fault.page ? ` · pág. ${a.fault.page}` : ""} · alarme {a.fault.code}{a.fault.subId != null ? `.${a.fault.subId}` : ""}</span>
+                        <button type="button" onClick={() => setView("Manuais")}>Abrir manuais →</button>
+                      </div>
+                    </div>
+                  ) : <p className="ck-nomanual">{a.description}<br />Sem interpretação no manual para este alarme ({a.type}).</p>}
+                  <small>Aberto {ago(Math.round((now.getTime() - new Date(a.openedAt).getTime()) / 1000))} · {new Date(a.openedAt).toLocaleString("pt-BR")}</small>
+                </div>
               </div>
             )))}
+            {view === "Câmeras" && (siteCams.length === 0
+              ? <p className="sc-empty">Nenhuma câmera cadastrada nesta planta.</p>
+              : <div className="ck-cam-grid">
+                  {siteCams.map((c) => (
+                    <button type="button" key={c.id} className="ck-cam-card" onClick={() => navigate(`/cameras/${c.id}`)}>
+                      <img src={`/api/camera/${c.id}/frame.jpg`} alt={c.name} loading="lazy" />
+                      <span className="ck-cam-name"><strong>{c.name}</strong><small>Abrir ao vivo →</small></span>
+                    </button>
+                  ))}
+                </div>)}
+            {view === "Manuais" && (manuals.length === 0
+              ? <p className="sc-empty">Biblioteca de manuais vazia.</p>
+              : <div className="ck-manuais">
+                  {MANUAL_KINDS.map(({ kind, label }) => {
+                    const items = manuals.filter((m) => m.equipmentKind === kind);
+                    if (!items.length) return null;
+                    return (
+                      <div key={kind} className="ck-man-group">
+                        <h3>{label}</h3>
+                        {items.map((m) => (
+                          <a key={m.id} className="ck-man-row" href={`/api/manuals/${m.id}/file`} target="_blank" rel="noopener noreferrer">
+                            <span className="ck-man-ic">▤</span>
+                            <span className="ck-man-meta"><strong>{m.title}</strong><small>{[m.model, m.issue, m.pages ? `${m.pages} pág.` : null].filter(Boolean).join(" · ")}</small></span>
+                            <span className="ck-man-open">Abrir →</span>
+                          </a>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>)}
           </div>
         </section>
       )}
@@ -500,18 +617,21 @@ export default function Scada() {
               <div><dt>Estado real</dt><dd data-tone={hasAutomation ? health.tone : "idle"}>{hasAutomation ? health.text : "Bomba operada no local, sem automação"}</dd></div>
               <div><dt>Consumo medido</dt><dd>{reading(load)} kW</dd></div>
               <div><dt>Último comando</dt><dd>{s.state.loadStatus === "on" ? "Ligar" : "Desligar"}</dd></div>
-              <div><dt>Automação</dt><dd data-tone={automationOnline ? "ok" : "bad"}>{!hasAutomation ? "Não instalada" : automationOnline ? "Online" : "Sem comunicação"}</dd></div>
+              <div><dt>Controlador</dt><dd data-tone={automationOnline ? "ok" : "bad"}>{!hasAutomation ? "Não instalado" : hasWave ? (waveOk ? "Relé Waveshare — online" : "Relé Waveshare — sem resposta") : automationOnline ? "Online" : "Sem comunicação"}</dd></div>
+              {hasWave && <div><dt>Relé da bomba</dt><dd data-tone={relayClosed ? "ok" : "idle"}>{relayClosed ? "fechado (ligar)" : "aberto (desligar)"}</dd></div>}
+              {hasWave && <div><dt>Retorno do contator</dt><dd data-tone={contactorConfirmed === false ? "bad" : contactorConfirmed ? "ok" : "idle"}>{contactorConfirmed === null ? "não cabeado" : contactorConfirmed ? "confirma" : "não confirma"}</dd></div>}
               <div><dt>Modo</dt><dd>{s.config.controlMode === "AUTO" ? "Automático" : "Manual"}</dd></div>
               {onToday != null && <div><dt>Ligada hoje</dt><dd>{Math.floor(onToday / 3600)} h {Math.round((onToday % 3600) / 60)} min</dd></div>}
               {s.derived.cooldownRemainingMs > 0 && <div><dt>Cooldown</dt><dd data-tone="warn">próxima ação liberada em {Math.ceil(s.derived.cooldownRemainingMs / 60000)} min</dd></div>}
               <div><dt>Faixa configurada</dt><dd>desliga em {s.config.socMinDesliga}% · religa em {s.config.socMinReliga}%</dd></div>
             </dl>
             {hasAutomation && <div className="sc-decision"><DecisionPanel s={s} /></div>}
-            {hasAutomation && !automationOnline && <p className="sc-warn">Automação sem comunicação: um comando enviado agora não chega à bomba.</p>}
+            {hasWave && <p className="sc-note">A bomba é comandada pelo Pi na planta (relé Waveshare). O comando pelo dashboard entra na Fase 2, depois de teste.</p>}
+            {!hasWave && hasAutomation && !automationOnline && <p className="sc-warn">Automação sem comunicação: um comando enviado agora não chega à bomba.</p>}
             {isAdmin ? (
               <div className="sc-actions">
-                <button type="button" className="outline" disabled={!hasAutomation || !automationOnline || command.isPending} onClick={() => setConfirm("ON")}>Ligar bomba</button>
-                <button type="button" className="outline" disabled={!hasAutomation || !automationOnline || command.isPending} onClick={() => setConfirm("OFF")}>Desligar bomba</button>
+                <button type="button" className="outline" disabled={!canCommand || command.isPending} onClick={() => setConfirm("ON")}>Ligar bomba</button>
+                <button type="button" className="outline" disabled={!canCommand || command.isPending} onClick={() => setConfirm("OFF")}>Desligar bomba</button>
                 <button type="button" className="outline" disabled={setMode.isPending} onClick={() => setMode.mutate({ slug, mode: s.config.controlMode === "AUTO" ? "MANUAL" : "AUTO" })}>Mudar para {s.config.controlMode === "AUTO" ? "manual" : "automático"}</button>
                 <button type="button" className="outline" onClick={() => setConfigOpen(true)}>Configurar limites</button>
               </div>

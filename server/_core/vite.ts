@@ -58,10 +58,27 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  // Cache de PWA: arquivos com hash no nome (/assets/*) nunca mudam de conteúdo (o nome muda a cada
+  // build), então cache longo e imutável. Já o ponto de entrada — index.html, o service worker (sw.js),
+  // o registrador e o manifesto — precisa ser SEMPRE revalidado, senão o navegador/Cloudflare servem a
+  // versão antiga e a atualização "gruda" (foi o que atrapalhou os testes das câmeras).
+  app.use(
+    express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        const base = path.basename(filePath);
+        const revalidate = ["index.html", "sw.js", "registerSW.js", "manifest.webmanifest"];
+        if (revalidate.includes(base)) {
+          res.setHeader("Cache-Control", "no-cache");
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      },
+    }),
+  );
 
-  // fall through to index.html if the file doesn't exist
+  // fall through to index.html if the file doesn't exist (SPA): também sem cache preso.
   app.use("*", (_req, res) => {
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
